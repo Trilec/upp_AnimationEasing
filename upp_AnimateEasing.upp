@@ -1,0 +1,18 @@
+description "Showcases U++ Animation & Easing Engine\377";
+
+uses
+	Core,
+	CtrlLib;
+
+include
+	,
+	/include;
+
+file
+	main.cpp,
+	include/Animation.h,
+	src/Animation.cpp;
+
+mainconfig
+	"" = "CONSOLE";
+
