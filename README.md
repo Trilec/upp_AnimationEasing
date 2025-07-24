@@ -23,9 +23,10 @@ The repository is structured for easy integration with a standard U++ applicatio
 
 ```
 upp_AnimationEasing/
-├── CtrlLib/
-│   ├── Animation.h      # The main library header
+├── src/
 │   └── Animation.cpp    # The library implementation
+├── include/
+│   ├── Animation.h      # The main library header
 ├── main.cpp             # A comprehensive demo application
 ├── upp_AnimationEasing.upp
 ├── README.md            # This file
