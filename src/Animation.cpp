@@ -1,289 +1,251 @@
-// File: uppsrc/CtrlLib/Animation.cpp
 #include "Animation.h"
 
-namespace Upp {
+#define CLOG_ENABLED 1
+#include "clog.h"
 
-int Animation::s_frameIntervalMs = 1000 / 30; // default 30 FPS
+using namespace Upp;
 
-// Global list of running states
-static Vector<One<Animation::State>>& AnimList()
+/*==================== configuration ====================*/
+static int g_step_ms = 1000 / 60;
+static inline int ClampFPS(int fps) { return clamp(fps, 1, 240); }
+
+/*==================== 2. Scheduler ====================*/
+namespace {
+struct Scheduler {
+    static Scheduler& Inst()
+    {
+        static Scheduler* s = new Scheduler; // never destroyed
+        return *s;
+    }
+
+    ~Scheduler() noexcept {}
+
+    Vector<Ptr<Animation::State>> active;
+    TimeCallback ticker;
+    bool running = false;
+
+    void Start() {
+        CLOG << "Scheduler::Start()";
+        if(!running) {
+            running = true;
+    
+            ticker.Set(g_step_ms, [=] { Tick(); });
+           
+        }
+    }
+
+    void Stop() {
+        CLOG << "Scheduler::Stop()";
+        ticker.Kill();
+        running = false;
+    }
+
+    void Add(Ptr<Animation::State> s) {
+       
+        active.Add(s);
+        
+        Start();
+    }
+
+    void Remove(Animation::State* st) {
+        
+        for(int i = 0; i < active.GetCount(); ++i)
+            if(active[i] == st) {
+                active.Remove(i);
+               
+                break;
+            }
+        if(active.IsEmpty()) Stop();
+    }
+
+    void Tick() {
+      // CLOG << "Scheduler::Tick() begin count=" << active.GetCount();
+        int64 now = msecs();
+        for(int i = 0; i < active.GetCount();) {
+            try {
+                Ptr<Animation::State> p = active[i];
+                if(!p) { active.Remove(i); continue; }
+                bool cont = p->Step(now);
+                if(!cont) {  active.Remove(i); }
+                else ++i;
+            } catch(...) {
+               
+                active.Remove(i);
+            }
+        }
+        if(!active.IsEmpty()) {
+            ticker.Set(g_step_ms, [=] { Tick(); });
+            
+        } else {
+            
+            Stop();
+        }
+    }
+
+    void KillAll() {
+        
+        Stop();
+        active.Clear();
+       
+    }
+
+    void KillFor(Ctrl* c) {
+       
+        for(int i = active.GetCount() - 1; i >= 0; --i)
+            if(!active[i] || active[i]->owner == c)
+                active.Remove(i);
+        
+        if(active.IsEmpty()) Stop();
+    }
+
+    // NEW
+    void Shutdown() {
+       
+        Stop();
+        active.Clear();
+        
+    }
+};
+} // namespace
+
+/*==================== 3. Animation impl ====================*/
+Animation::Animation(Ctrl& owner)
+    : owner_(&owner) // plain raw pointer
 {
-	return Single<Vector<One<Animation::State>>>();
+    
+    spec_box_.Create();
+    spec_ = ~spec_box_;
 }
 
-// Unique tag for SetTimeCallback/KillTimeCallback
-static int s_timerTag = 0;
-
-// Forward
-static void AnimationTick();
-
-// Ensure timer is running/stopped appropriately
-static void EnsureTimerRunning()
+Animation::~Animation()
 {
-	if(AnimList().IsEmpty()) {
-		if(s_timerTag) {
-			KillTimeCallback(&s_timerTag);
-			s_timerTag = 0;
-		}
-		return;
-	}
-	if(!s_timerTag) {
-		s_timerTag = 1;
-		SetTimeCallback(Animation::GetFPS(), &AnimationTick, &s_timerTag);
-	}
+   
+    // Do NOT touch the scheduler here. At app shutdown it is already stopped/cleared.
+    // Just drop our Ptr. The State will be owned by the scheduler while running,
+    live_ = nullptr;
 }
 
-// The main tick proc
-static void AnimationTick()
-{
-	int64 now = GetTimeClick();
-	auto& list = AnimList();
 
-	bool any_paused = false;
-
-	for(int i = 0; i < list.GetCount();) {
-		Animation::State* s = list[i].Get();
-
-		// Safety: owner gone?
-		Ctrl* ow = s->owner;
-		if(!ow) {
-			list.Remove(i);
-			continue;
-		}
-
-		TopWindow* tw = ow->GetTopWindow();
-		if((tw && !tw->IsOpen()) || (!tw && ow->GetParent() == nullptr)) {
-			list.Remove(i);
-			continue;
-		}
-
-		if(s->paused) {
-			++i;
-			any_paused = true;
-			continue;
-		}
-
-		double progress =
-			s->time_ms > 0 ? clamp(double(now - s->start_time) / s->time_ms, 0.0, 1.0) : 1.0;
-		if(s->reverse)
-			progress = 1.0 - progress;
-
-		if(!s->tick(s->ease(progress))) {
-			list.Remove(i);
-			continue;
-		}
-
-		if(now - s->start_time >= s->time_ms) {
-			if(s->count > 0)
-				--s->count;
-			if(s->count == 0) {
-				// snap final
-				s->tick(s->ease(s->reverse ? 0.0 : 1.0));
-				list.Remove(i);
-				continue;
-			}
-			if(s->yoyo)
-				s->reverse = !s->reverse;
-			s->start_time = now;
-		}
-		++i;
-	}
-
-	if(list.GetCount() || any_paused) {
-		SetTimeCallback(Animation::GetFPS(), &AnimationTick, &s_timerTag);
-	}
-	else {
-		KillTimeCallback(&s_timerTag);
-		s_timerTag = 0;
-	}
+void Animation::ShutdownScheduler() {
+    
+    Scheduler::Inst().Shutdown();
 }
 
-// ---- State methods ----------------------------------------------------------
-void Animation::State::Cancel()
+#define RET(expr) \
+    do { expr; return *this; } while(0)
+
+Animation& Animation::Duration(int ms) { RET(spec_->duration_ms = ms); }
+
+// Easing
+Animation& Animation::Ease(const Easing::Fn& fn) { RET(spec_->easing = fn); }
+Animation& Animation::Ease(Easing::Fn&& fn)      { RET(spec_->easing = pick(fn)); }
+
+// Loop, Yoyo, Delay
+Animation& Animation::Loop(int n)     { RET(spec_->loop_count = n); }
+Animation& Animation::Yoyo(bool b)    { RET(spec_->yoyo = b); }
+Animation& Animation::Delay(int ms)   { RET(spec_->delay_ms = ms); }
+
+// Callbacks
+Animation& Animation::OnStart(const Callback& cb) { RET(spec_->on_start = cb); }
+Animation& Animation::OnStart(Callback&& cb)      { RET(spec_->on_start = pick(cb)); }
+
+Animation& Animation::OnFinish(const Callback& cb) { RET(spec_->on_finish = cb); }
+Animation& Animation::OnFinish(Callback&& cb)      { RET(spec_->on_finish = pick(cb)); }
+
+Animation& Animation::OnCancel(const Callback& cb) { RET(spec_->on_cancel = cb); }
+Animation& Animation::OnCancel(Callback&& cb)      { RET(spec_->on_cancel = pick(cb)); }
+
+Animation& Animation::OnUpdate(const Callback1<double>& c) { RET(spec_->on_update = c); }
+Animation& Animation::OnUpdate(Callback1<double>&& c)      { RET(spec_->on_update = pick(c)); }
+
+// Tick function
+Animation& Animation::operator()(const Function<bool(double)>& f)
 {
-	auto& list = AnimList();
-	for(int i = 0; i < list.GetCount(); ++i) {
-		if(list[i].Get() == this) {
-			list.Remove(i);
-			break;
-		}
-	}
-	owner = nullptr;
+    spec_->tick = f;
+    return *this;
+}
+Animation& Animation::operator()(Function<bool(double)>&& f)
+{
+    spec_->tick = pick(f);
+    return *this;
 }
 
-// ---- Animation methods ------------------------------------------------------
-Animation::Animation(Ctrl& c)
+#undef RET
+
+void Animation::Play()
 {
-	s_owner = new State(c);
-	s_handle = s_owner.Get();
-}
+    if(!spec_) {  return; }
 
-Animation::~Animation() { Cancel(); }
+    live_ = new State;
+    live_->owner = owner_;
+    live_->spec = pick(*spec_);
+    spec_ = nullptr;
 
-Animation::Animation(Animation&& other) { *this = pick(other); }
-
-Animation& Animation::operator=(Animation&& other)
-{
-	if(this != &other) {
-		Cancel();
-		s_owner = pick(other.s_owner);
-		s_handle = other.s_handle;
-		other.s_handle = nullptr;
-	}
-	return *this;
-}
-
-// Pattern 2: Rebind
-void Animation::Rebind(Ctrl& c)
-{
-	Cancel(); // unschedule any running one
-	s_owner.Clear();
-	s_owner = new State(c);
-	s_handle = s_owner.Get();
-}
-
-void Animation::Start()
-{
-	if(!s_owner)
-		return; // nothing pending
-
-	// prepare
-	s_handle->start_time = GetTimeClick();
-	s_handle->reverse = false;
-	s_handle->paused = false;
-	s_handle->elapsed_time = 0;
-
-	// move into global list
-	AnimList().Add(pick(s_owner));
-	// after picking, we MUST null our handle, otherwise Stop() would Cancel wrong thing
-	s_handle = nullptr;
-
-	EnsureTimerRunning();
+    live_->start_ms = msecs();
+    live_->cycles = (live_->spec.loop_count < 0) ? INT_MAX : live_->spec.loop_count;
+  
+    if(live_->spec.on_start)
+        live_->spec.on_start();
+    Scheduler::Inst().Add(live_);
 }
 
 void Animation::Pause()
 {
-	if(!s_handle)
-		return; 
-	            // Pause during run. Then we need a Ptr. Simpler:
-	            // Use State::Cancel? No. We'll allow Pause() only when s_handle is still valid.
-	            // If it has started, we need to find it in list. 
-
+    if(live_ && !live_->paused) {
+        live_->elapsed_ms += msecs() - live_->start_ms;
+        live_->paused = true;
+    }
 }
 
 void Animation::Resume()
 {
-	// Same note as Pause()
+    if(live_ && live_->paused) {
+        live_->start_ms = msecs();
+        live_->paused = false;
+    }
 }
 
 void Animation::Stop()
 {
-	// Snap to end if still pending
-	if(s_handle) {
-		s_handle->tick(s_handle->ease(s_handle->reverse ? 0.0 : 1.0));
-		s_handle->Cancel();
-		s_handle = nullptr;
-	}
+ 
+    if(!live_)
+        return;
+    if(live_->spec.tick)
+        live_->spec.tick(live_->reverse ? 0.0 : 1.0);
+    if(live_->spec.on_finish)
+        live_->spec.on_finish();
+    Cancel();
 }
 
 void Animation::Cancel()
 {
-	// Hard kill, no snapping
-	if(s_handle) {
-		s_handle->Cancel();
-		s_handle = nullptr;
-	}
+    
+    if(!live_)
+        return;
+
+    if(live_->spec.on_cancel)
+        live_->spec.on_cancel();
+
+    Scheduler::Inst().Remove(live_); // scheduler deletes it exactly once
+    live_ = nullptr;                 // we no longer reference it
 }
 
-bool Animation::IsPlaying() const
+bool Animation::IsPlaying() const { return live_ && !live_->paused; }
+bool Animation::IsPaused() const  { return live_ && live_->paused; }
+
+double Animation::Progress() const
 {
-	// If s_handle is null, we cannot tell easily. We'll just say false
-	return false;
+    if(!live_)
+        return 0.0;
+    int64 run = live_->elapsed_ms + (live_->paused ? 0 : (msecs() - live_->start_ms));
+    run = max<int64>(0, run - live_->spec.delay_ms);
+    return clamp(double(run) / live_->spec.duration_ms, 0.0, 1.0);
 }
 
-bool Animation::IsPaused() const { return false; }
+/* fps */
+void Animation::SetFPS(int fps) { g_step_ms = 1000 / ClampFPS(fps); }
+int  Animation::GetFPS()        { return 1000 / g_step_ms; }
 
-double Animation::GetProgress() const { return 0.0; }
-
-void Animation::SetFPS(int fps)
-{
-	if(fps > 0)
-		s_frameIntervalMs = 1000 / fps;
-}
-
-int Animation::GetFPS() { return s_frameIntervalMs ? 1000 / s_frameIntervalMs : 0; }
-
-// convenience helpers
-Animation& Animation::Rect(const Upp::Rect& r)
-{
-	if(!s_handle)
-		return *this;
-	Animation::State* st = s_handle;
-	Upp::Rect from = st->owner->GetRect();
-	st->tick = [st, from, r](double t) {
-		if(!st->owner)
-			return false;
-		st->owner->SetRect(Lerp(from, r, t));
-		st->owner->Refresh();
-		return true;
-	};
-	return *this;
-}
-
-Animation& Animation::Pos(const Upp::Point& p)
-{
-	if(!s_handle)
-		return *this;
-	Animation::State* st = s_handle;
-	Upp::Rect from = st->owner->GetRect();
-	st->tick = [st, from, p](double t) {
-		if(!st->owner)
-			return false;
-		Upp::Point tl = Lerp(from.TopLeft(), p, t);
-		st->owner->SetRect(tl.x, tl.y, from.Width(), from.Height());
-		st->owner->Refresh();
-		return true;
-	};
-	return *this;
-}
-
-Animation& Animation::Size(const Upp::Size& sz)
-{
-	if(!s_handle)
-		return *this;
-	Animation::State* st = s_handle;
-	Upp::Rect from = st->owner->GetRect();
-	st->tick = [st, from, sz](double t) {
-		if(!st->owner)
-			return false;
-		Upp::Size s = Lerp(from.GetSize(), sz, t);
-		Upp::Point c = from.CenterPoint();
-		st->owner->SetRect(c.x - s.cx / 2, c.y - s.cy / 2, s.cx, s.cy);
-		st->owner->Refresh();
-		return true;
-	};
-	return *this;
-}
-
-Animation& Animation::Alpha(double from, double to)
-{
-	if(!s_handle)
-		return *this;
-	Animation::State* st = s_handle;
-	st->tick = [st, from, to](double t) {
-		if(!st->owner)
-			return false;
-		st->owner->SetAlpha(int(255 * Lerp(from, to, t)));
-		st->owner->Refresh();
-		return true;
-	};
-	return *this;
-}
-
-void KillAll()
-{
-	AnimList().Clear();
-	EnsureTimerRunning();
-}
-
-} // namespace Upp
+/* global */
+void Animation::KillAll()          { Scheduler::Inst().KillAll(); }
+void Animation::KillAllFor(Ctrl& c){ Scheduler::Inst().KillFor(&c); }

@@ -1,240 +1,476 @@
-// File: examples/AnimateEasing/main.cpp
-#include <CtrlLib/Animation.h>
+// AnimationTestSuite.cpp
 #include <CtrlLib/CtrlLib.h>
-
+#include <CtrlLib/Animation.h>
 using namespace Upp;
 
-struct CurvePlotter : public Ctrl {
-	Easing::Fn ease;
-	void Paint(Draw& w) override
-	{
-		Size sz = GetSize();
-		w.DrawRect(sz, SColorPaper());
-		if(!ease)
-			return;
-		w.DrawLine(0, sz.cy / 2, sz.cx, sz.cy / 2, 1, LtGray());
-		Point p1(0, sz.cy - int(sz.cy * ease(0.0)));
-		for(int i = 1; i < sz.cx; i++) {
-			double t = double(i) / (sz.cx - 1);
-			Point p2(i, sz.cy - int(sz.cy * ease(t)));
-			w.DrawLine(p1, p2, 2, SColorHighlight());
-			if(i % 15 == 0)
-				w.DrawEllipse(i - 2, p2.y - 2, 5, 5, Red(), 1, Red());
-			p1 = p2;
-		}
-	}
-	void SetEasing(Easing::Fn fn)
-	{
-		ease = fn;
-		Refresh();
-	}
+#include "clog.h"
+#include <crtdbg.h>  // Windows leak check
+
+// ---- pump helper: run the U++ event loop for ms ----
+static void PumpFor(int ms) {
+    int64 until = msecs() + ms;
+    while (msecs() < until) {
+        Ctrl::ProcessEvents();
+        Sleep(1);
+    }
+}
+
+// ---- memory leak detector (Windows only) ----
+struct MemCheck {
+#ifdef _WIN32
+    _CrtMemState state1, state2, state3;
+    MemCheck() { _CrtMemCheckpoint(&state1); }
+    ~MemCheck() {
+        _CrtMemCheckpoint(&state2);
+        if(_CrtMemDifference(&state3, &state1, &state2)) {
+            CLOG << "MEMORY LEAK DETECTED!";
+            _CrtMemDumpStatistics(&state3);
+        }
+    }
+#else
+    MemCheck() {}
+    ~MemCheck() {}
+#endif
 };
 
-struct HoverBox : public Ctrl {
-	String label;
-	Animation hover_anim;
-	HoverBox(const String& lbl)
-		: label(lbl)
-	{
-		BackPaint();
-	}
-
-	void Paint(Draw& w) override
-	{
-		w.DrawRect(GetSize(), Blend(Blue, White, 150));
-		DrawFrame(w, GetSize(), SColorText());
-		Font f = Arial(GetSize().cy / 3).Bold();
-		Size tsz = GetTextSize(label, f);
-		w.DrawText((GetSize().cx - tsz.cx) / 2, (GetSize().cy - tsz.cy) / 2, label, f,
-		           SColorText());
-	}
-
-	void MouseEnter(Point, dword) override
-	{
-		hover_anim.Stop();
-		hover_anim.Rebuild(*this, [&](Animation& a) {
-			a.Size(Upp::Size(90, 90)).Time(300).Ease(Easing::OutBounce);
-		});
-		hover_anim.Start();
-	}
-
-	void MouseLeave() override
-	{
-		hover_anim.Stop();
-		hover_anim.Rebuild(*this, [&](Animation& a) {
-			a.Size(Upp::Size(80, 80)).Time(300).Ease(Easing::OutBounce);
-		});
-		hover_anim.Start();
-	}
-};
-
-// Easing / modes tables
-static const struct {
-	const char* name;
-	Easing::Fn fn;
-} EasingFunctions[] = {
-	{"Linear", Easing::Linear},
-	{"InQuad", Easing::InQuad},
-	{"OutQuad", Easing::OutQuad},
-	{"InOutQuad", Easing::InOutQuad},
-	{"OutBounce", Easing::OutBounce},
-	{"InCubic", Easing::InCubic},
-	{"OutCubic", Easing::OutCubic},
-	{"InOutCubic", Easing::InOutCubic},
-	{"InQuart", Easing::InQuart},
-	{"OutQuart", Easing::OutQuart},
-	{"InOutQuart", Easing::InOutQuart},
-	{"InQuint", Easing::InQuint},
-	{"OutQuint", Easing::OutQuint},
-	{"InOutQuint", Easing::InOutQuint},
-	{"InSine", Easing::InSine},
-	{"OutSine", Easing::OutSine},
-	{"InOutSine", Easing::InOutSine},
-	{"InExpo", Easing::InExpo},
-	{"OutExpo", Easing::OutExpo},
-	{"InOutExpo", Easing::InOutExpo},
-	{"InElastic", Easing::InElastic},
-	{"OutElastic", Easing::OutElastic},
-	{"InOutElastic", Easing::InOutElastic},
-};
-
-static const struct {
-	const char* name;
-	AnimMode mode;
-} AnimationModes[] = {{"Once", Once}, {"Loop", Loop}, {"Yoyo", Yoyo}};
-
-// Demo window
-class AnimationDemo : public TopWindow {
+// ---- Test window (not shown, but gives a Ctrl owner) ----
+class TestWindow : public TopWindow {
 public:
-	typedef AnimationDemo CLASSNAME;
-	AnimationDemo();
+    typedef TestWindow CLASSNAME;
 
-private:
-	void AnimateSlider();
-	void PauseSlider();
-	void KillAllHandler();
-	void UpdateDemos();
+    int   test_value = 0;
+    Color test_color = Black();
+    Rect  test_rect  = Rect(0, 0, 100, 100);
+    Point test_point = Point(0, 0);
+    Size  test_size  = Size(100, 100);
 
-	DropList easingList, modeList;
-	Button animateButton, pauseButton, killAllButton;
-	StaticRect previewBar;
-	CurvePlotter curvePlot;
-	StaticRect slider, startMarker, endMarker;
-	Array<One<HoverBox>> hoverBoxes;
+    bool  callback_fired = false;
+    int   update_count = 0;
 
-	Animation previewAnim;
-	Animation sliderAnim;
-	bool isPaused = false;
+    TestWindow() {
+        Title("Animation Test Window");
+        // We do not call Run(); tests are headless.
+        SetRect(Rect(0, 0, 400, 300));
+        BackPaint();
+        // keep window hidden but constructed so it has a HWND/host as needed
+    }
+
+    void Reset() {
+        test_value = 0;
+        test_color = Black();
+        test_rect  = Rect(0, 0, 100, 100);
+        test_point = Point(0, 0);
+        test_size  = Size(100, 100);
+        callback_fired = false;
+        update_count = 0;
+    }
+
+    void OnStartTest()           { callback_fired = true; }
+    void OnFinishTest()          { callback_fired = true; }
+    void OnCancelTest()          { callback_fired = true; }
+    void OnUpdateTest(double)    { update_count++; }
+    void SetTestColor(const Color& c) { test_color = c; }
+    void SetTestRect(const Rect& r)   { test_rect  = r; }
 };
 
-AnimationDemo::AnimationDemo()
-{
-	Title("U++ Animation Showcase").Sizeable().Zoomable().SetRect(0, 0, 700, 600);
+// ---- shared state for callback-based tests ----
+struct TestState {
+    bool finish_fired = false;
+    bool cancel_fired = false;
+    bool update_fired = false;
+    int  tick_count   = 0;
+    int  cycle_count  = 0;
+    Vector<double> values;
+    bool completed = false;
+    int count1 = 0, count2 = 0, count3 = 0;
+};
+static TestState* g_state = nullptr;
 
-	Add(easingList.TopPos(10, 25).LeftPos(10, 150));
-	for(auto& e : EasingFunctions)
-		easingList.Add(e.name);
-	easingList.SetIndex(0);
+// ---- free callbacks to satisfy Callback/Callback1 signatures ----
+void GlobalOnFinish()        { if(g_state) g_state->finish_fired = true; }
+void GlobalOnCancel()        { if(g_state) g_state->cancel_fired = true; }
+void GlobalOnUpdate(double)  { if(g_state) g_state->update_fired = true; }
 
-	Add(modeList.TopPos(10, 25).LeftPos(170, 100));
-	for(auto& m : AnimationModes)
-		modeList.Add(m.name);
-	modeList.SetIndex(0);
+// ---- mini test runner ----
+class TestRunner {
+    String current_test;
+    int passed = 0, failed = 0;
+    bool test_started = false;
+public:
+    void StartTest(const String& name) {
+        current_test = name;
+        test_started = true;
+        std::fprintf(stderr, "TESTING [%s] [", ~name);
+        std::fflush(stderr);
+    }
+    void Progress() { if(test_started) { std::fprintf(stderr, "."); std::fflush(stderr);} }
+    void Pass()     { if(test_started) { std::fprintf(stderr, "] PASS\n"); std::fflush(stderr); passed++; test_started=false; } }
+    void Fail(const String& reason) {
+        if(test_started){ std::fprintf(stderr, "] FAIL - %s\n", ~reason); std::fflush(stderr); failed++; test_started=false; }
+    }
+    void Summary() {
+        std::fprintf(stderr, "\n=======================\n");
+        std::fprintf(stderr, "TESTS PASSED: %d\n", passed);
+        std::fprintf(stderr, "TESTS FAILED: %d\n", failed);
+        std::fprintf(stderr, "TOTAL: %d\n", passed + failed);
+        std::fprintf(stderr, "=======================\n");
+        std::fflush(stderr);
+    }
+};
 
-	animateButton.SetLabel("Animate Slider");
-	Add(animateButton.TopPos(10, 25).LeftPos(280, 120));
-	pauseButton.SetLabel("Pause");
-	Add(pauseButton.TopPos(10, 25).LeftPos(410, 120));
-	killAllButton.SetLabel("Kill All");
-	Add(killAllButton.TopPos(10, 25).LeftPos(540, 120));
+// ---- tests ----
+bool TestBasicPlay(TestWindow& w, TestRunner& r) {
+    r.StartTest("Basic Play"); MemCheck mem;
+    try {
+        r.Progress();
+        TestState st; g_state = &st;
 
-	previewBar.Color(Blend(Green, White, 100));
-	Add(previewBar.TopPos(45, 10).HSizePos(10, 10));
+        Animation anim(w);
+        anim([](double) -> bool { if(g_state) g_state->tick_count++; return true; })
+            .Duration(100)
+            .Play();
 
-	Add(curvePlot.TopPos(65, 120).HSizePos(10, 10));
+        r.Progress();
+        PumpFor(160); // > duration
 
-	int sy = 200, sh = 50;
-	startMarker.Color(LtGray());
-	endMarker.Color(LtGray());
-	slider.Color(Blue());
-	Add(startMarker.TopPos(sy, sh).LeftPos(50, 1));
-	Add(endMarker.TopPos(sy, sh).RightPos(50, 1));
-	Add(slider.TopPos(sy, sh).LeftPos(50, 50));
-
-	for(int i = 0; i < 6; i++) {
-		One<HoverBox>& hb = hoverBoxes.Add(new HoverBox(AsString(i + 1)));
-		Add(hb->BottomPos(10, 80).LeftPos(10 + i * 95, 80));
-	}
-
-	easingList.WhenAction << THISBACK(UpdateDemos);
-	modeList.WhenAction << THISBACK(UpdateDemos);
-	animateButton << THISBACK(AnimateSlider);
-	pauseButton << THISBACK(PauseSlider);
-	killAllButton << THISBACK(KillAllHandler);
-
-	UpdateDemos();
+        if(st.tick_count == 0) { r.Fail("Tick function not called"); return false; }
+        r.Progress(); r.Pass(); g_state=nullptr; return true;
+    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
 }
 
-void AnimationDemo::UpdateDemos()
-{
-	Easing::Fn ease = EasingFunctions[easingList.GetIndex()].fn;
-	AnimMode mode = AnimationModes[modeList.GetIndex()].mode;
+bool TestPauseResume(TestWindow& w, TestRunner& r) {
+    r.StartTest("Pause/Resume"); MemCheck mem;
+    try {
+        r.Progress();
+        TestState st; g_state = &st;
 
-	curvePlot.SetEasing(ease);
+        Animation anim(w);
+        anim([](double) -> bool { if(g_state) g_state->tick_count++; return true; })
+            .Duration(220)
+            .Play();
 
-	Upp::Rect r = previewBar.GetRect();
+        r.Progress();
+        PumpFor(60);
+        anim.Pause();
 
-	previewAnim.Stop();
-	previewAnim.Rebuild(previewBar, [&](Animation& a) {
-		a.Rect(r).Time(1500).Ease(ease);
-		if(mode == Loop)
-			a.Count(-1);
-		else if(mode == Yoyo)
-			a.Yoyo();
-	});
-	previewAnim.Start();
+        int at_pause = st.tick_count;
+        PumpFor(80);          // while paused, count must not change
+        if(st.tick_count != at_pause) { r.Fail("Animation continued after pause"); g_state=nullptr; return false; }
+
+        r.Progress();
+        anim.Resume();
+        PumpFor(200);
+
+        if(st.tick_count == at_pause) { r.Fail("Animation did not resume"); g_state=nullptr; return false; }
+        r.Progress(); r.Pass(); g_state=nullptr; return true;
+    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
 }
 
-void AnimationDemo::AnimateSlider()
-{
-	sliderAnim.Stop();
+bool TestCallbacks(TestWindow& w, TestRunner& r) {
+    r.StartTest("Callbacks"); MemCheck mem;
+    try {
+        r.Progress();
+        w.callback_fired = false; TestState st; g_state=&st;
 
-	Easing::Fn ease = EasingFunctions[easingList.GetIndex()].fn;
-	AnimMode mode = AnimationModes[modeList.GetIndex()].mode;
+        Animation anim(w);
+        anim.Duration(100)
+            .OnStart(callback(&w, &TestWindow::OnStartTest))
+            .OnFinish(callback(GlobalOnFinish))
+            .OnUpdate(callback(GlobalOnUpdate))
+            .Play();
 
-	Upp::Rect sr = startMarker.GetRect();
-	Upp::Rect er = endMarker.GetRect();
-	Upp::Rect toR(er.TopLeft(), sr.GetSize());
-	slider.SetRect(sr);
+        r.Progress();
+        PumpFor(160);
 
-	sliderAnim.Rebuild(slider, [&](Animation& a) {
-		a.Rect(toR).Time(1200).Ease(ease);
-		if(mode == Loop)
-			a.Count(-1);
-		else if(mode == Yoyo)
-			a.Yoyo();
-	});
-	sliderAnim.Start();
+        if(!w.callback_fired)      { r.Fail("OnStart not fired"); g_state=nullptr; return false; }
+        if(!st.finish_fired)       { r.Fail("OnFinish not fired"); g_state=nullptr; return false; }
+        if(!st.update_fired)       { r.Fail("OnUpdate not fired"); g_state=nullptr; return false; }
 
-	isPaused = false;
-	pauseButton.SetLabel("Pause");
-	pauseButton.SetStyle(Button::StyleNormal());
+        r.Progress(); r.Pass(); g_state=nullptr; return true;
+    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
 }
 
-void AnimationDemo::PauseSlider()
-{
-	// Because Pause/Resume/IsPlaying were stubbed out, disable the button or implement them
-	// later. For now, simply do nothing to avoid crashes.
-	PromptOK("Pause/Resume not implemented in this pattern yet.");
+bool TestLoop(TestWindow& w, TestRunner& r) {
+    r.StartTest("Loop Mode"); MemCheck mem;
+    try {
+        r.Progress();
+        TestState st; g_state=&st;
+
+        Animation anim(w);
+        anim([](double p) -> bool {
+                if(g_state && p >= 0.99) g_state->cycle_count++;
+                return true; // scheduler handles loop_count
+            })
+            .Duration(50)
+            .Loop(3)
+            .Play();
+
+        r.Progress();
+        PumpFor(220); // 3 * ~50 + overhead
+
+        if(st.cycle_count < 3) { r.Fail(Format("Expected 3 cycles, got %d", st.cycle_count)); g_state=nullptr; return false; }
+        r.Progress(); r.Pass(); g_state=nullptr; return true;
+    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
 }
 
-void AnimationDemo::KillAllHandler()
-{
-	KillAll();
-	slider.SetRect(startMarker.GetRect());
-	isPaused = false;
-	pauseButton.SetLabel("Pause");
-	pauseButton.SetStyle(Button::StyleNormal());
+bool TestYoyo(TestWindow& w, TestRunner& r) {
+    r.StartTest("Yoyo Mode"); MemCheck mem;
+    try {
+        r.Progress();
+        TestState st; g_state=&st;
+
+        Animation anim(w);
+        anim([](double p) -> bool {
+                if(g_state) g_state->values.Add(p);
+                return true;
+            })
+            .Duration(120)
+            .Yoyo(true)
+            .Loop(2)
+            .Play();
+
+        r.Progress();
+        PumpFor(300);
+
+        bool went_up=false, went_down=false;
+        for(int i=1;i<st.values.GetCount();++i) {
+            if(st.values[i] > st.values[i-1]) went_up = true;
+            if(went_up && st.values[i] < st.values[i-1]) went_down = true;
+        }
+        if(!went_up || !went_down) { r.Fail("Yoyo pattern not detected"); g_state=nullptr; return false; }
+
+        r.Progress(); r.Pass(); g_state=nullptr; return true;
+    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
 }
 
-GUI_APP_MAIN { AnimationDemo().Run(); }
+bool TestEasing(TestWindow& w, TestRunner& r) {
+    r.StartTest("Easing Functions"); MemCheck mem;
+    try {
+        r.Progress();
+        const Easing::Fn* easings[] = {
+            &Easing::Linear(),
+            &Easing::InQuad(),
+            &Easing::OutQuad(),
+            &Easing::InOutCubic(),
+            &Easing::OutBounce()
+        };
+
+        for(auto easing : easings) {
+            r.Progress();
+            TestState st; g_state=&st;
+
+            Animation anim(w);
+            anim([](double p)->bool { if(g_state && p>=0.99) g_state->completed=true; return true; })
+                .Duration(60)
+                .Ease(*easing)
+                .Play();
+
+            PumpFor(120);
+            if(!st.completed) { r.Fail("Easing function failed"); g_state=nullptr; return false; }
+        }
+        r.Pass(); g_state=nullptr; return true;
+    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
+}
+
+bool TestValueAnimation(TestWindow& w, TestRunner& r) {
+    r.StartTest("Value Animation"); MemCheck mem;
+    try {
+        r.Progress();
+
+        w.test_color = Black();
+        AnimateColor(w, callback(&w, &TestWindow::SetTestColor),
+                     Black(), White(), 100);
+        PumpFor(160);
+        if(w.test_color == Black()) { r.Fail("Color did not animate"); return false; }
+
+        r.Progress();
+
+        Rect start(0,0,100,100), end(50,50,200,200);
+        w.test_rect = start;
+        AnimateRect(w, callback(&w, &TestWindow::SetTestRect), start, end, 100);
+        PumpFor(160);
+        if(w.test_rect == start) { r.Fail("Rect did not animate"); return false; }
+
+        r.Progress(); r.Pass(); return true;
+    } catch(...) { r.Fail("Exception thrown"); return false; }
+}
+
+bool TestMultipleAnimations(TestWindow& w, TestRunner& r) {
+    r.StartTest("Multiple Animations"); MemCheck mem;
+    try {
+        r.Progress();
+
+        TestState st; g_state=&st;
+
+        Animation a1(w); a1([](double){ if(g_state) g_state->count1++; return true; }).Duration(120).Play();
+        Animation a2(w); a2([](double){ if(g_state) g_state->count2++; return true; }).Duration(120).Play();
+        Animation a3(w); a3([](double){ if(g_state) g_state->count3++; return true; }).Duration(120).Play();
+
+        r.Progress();
+        PumpFor(200);
+
+        if(st.count1 == 0 || st.count2 == 0 || st.count3 == 0) { r.Fail("Not all animations ran"); g_state=nullptr; return false; }
+
+        r.Progress(); r.Pass(); g_state=nullptr; return true;
+    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
+}
+
+bool TestCancel(TestWindow& w, TestRunner& r) {
+    r.StartTest("Cancel"); MemCheck mem;
+    try {
+        r.Progress();
+
+        w.callback_fired = false;
+        TestState st; g_state=&st;
+
+        Animation anim(w);
+        anim.Duration(300)
+            .OnCancel(callback(&w, &TestWindow::OnCancelTest))
+            .OnFinish(callback(GlobalOnFinish))
+            .Play();
+
+        r.Progress();
+        PumpFor(80);
+        anim.Cancel();
+        PumpFor(80);
+
+        if(!w.callback_fired)      { r.Fail("OnCancel not fired"); g_state=nullptr; return false; }
+        if(st.finish_fired)        { r.Fail("OnFinish fired after cancel"); g_state=nullptr; return false; }
+
+        r.Progress(); r.Pass(); g_state=nullptr; return true;
+    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
+}
+
+bool TestKillAll(TestWindow& w, TestRunner& r) {
+    r.StartTest("KillAll"); MemCheck mem;
+    try {
+        r.Progress();
+
+        TestState st; g_state=&st;
+        int& count = st.tick_count;
+
+        for(int i=0;i<5;i++) {
+            Animation a(w);
+            a([](double){ if(g_state) g_state->tick_count++; return true; })
+                .Duration(500).Play();
+        }
+
+        r.Progress();
+        PumpFor(60);
+        int before = count;
+
+        Animation::KillAll();
+        PumpFor(120);
+
+        if(count != before) { r.Fail("Animations continued after KillAll"); g_state=nullptr; return false; }
+
+        r.Progress(); r.Pass(); g_state=nullptr; return true;
+    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
+}
+
+bool TestFPS(TestWindow&, TestRunner& r) {
+    r.StartTest("FPS Settings"); MemCheck mem;
+    try {
+        r.Progress();
+        int orig = Animation::GetFPS();
+
+        Animation::SetFPS(30);
+        {
+            int eff = Animation::GetFPS();
+            // expect ~30 (+/-2)
+            if(!(eff >= 28 && eff <= 32)) { r.Fail(Format("FPS ~30 expected, got %d", eff)); return false; }
+        }
+
+        r.Progress();
+
+        Animation::SetFPS(120);
+        {
+            int eff = Animation::GetFPS();
+            // with 1ms granularity, 8ms -> 125 fps. Accept 115–130.
+            if(!(eff >= 115 && eff <= 130)) { r.Fail(Format("FPS ~120 expected, got %d", eff)); return false; }
+        }
+
+        // restore
+        Animation::SetFPS(orig);
+        r.Progress(); r.Pass(); return true;
+    } catch(...) { r.Fail("Exception thrown"); return false; }
+}
+
+
+bool TestDelay(TestWindow& w, TestRunner& r) {
+    r.StartTest("Delay"); MemCheck mem;
+    try {
+        r.Progress();
+
+        TestState st; g_state=&st;
+        int64 start_time = msecs();
+
+        Animation anim(w);
+        anim([start_time](double) -> bool {
+                if(g_state && !g_state->completed) {
+                    g_state->completed = true;
+                    int64 elapsed = msecs() - start_time;
+                    if(elapsed < 90) { g_state->tick_count = -1; return false; }
+                }
+                return true;
+            })
+            .Duration(50)
+            .Delay(100)
+            .Play();
+
+        r.Progress();
+        PumpFor(220);
+
+        if(!st.completed)            { r.Fail("Animation never started after delay"); g_state=nullptr; return false; }
+        if(st.tick_count == -1)      { r.Fail("Started too early"); g_state=nullptr; return false; }
+
+        r.Progress(); r.Pass(); g_state=nullptr; return true;
+    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
+}
+
+bool TestMemoryStress(TestWindow& w, TestRunner& r) {
+    r.StartTest("Memory Stress"); MemCheck mem;
+    try {
+        r.Progress();
+        for(int i=0;i<100;i++) {
+            Animation a(w);
+            a([](double){ return true; }).Duration(10).Play();
+            if(i % 20 == 0) r.Progress();
+        }
+        PumpFor(120);
+        Animation::KillAll();
+        r.Progress(); r.Pass(); return true;
+    } catch(...) { r.Fail("Exception thrown"); return false; }
+}
+
+// ---- suite entry point ----
+GUI_APP_MAIN
+{
+    std::fprintf(stderr, "\nStarting Animation Test Suite | V02\n");
+    std::fprintf(stderr, "=======================\n");
+    std::fflush(stderr);
+
+    TestWindow w;   // constructed, but we never call w.Run()
+
+    TestRunner runner;
+
+    TestBasicPlay(w, runner);         w.Reset();
+    TestPauseResume(w, runner);       w.Reset();
+    TestCallbacks(w, runner);         w.Reset();
+    TestLoop(w, runner);              w.Reset();
+    TestYoyo(w, runner);              w.Reset();
+    TestEasing(w, runner);            w.Reset();
+    TestValueAnimation(w, runner);    w.Reset();
+    TestMultipleAnimations(w, runner);w.Reset();
+    TestCancel(w, runner);            w.Reset();
+    TestKillAll(w, runner);           w.Reset();
+    TestFPS(w, runner);               w.Reset();
+    TestDelay(w, runner);             w.Reset();
+    TestMemoryStress(w, runner);
+
+    // Clean shutdown
+    Animation::ShutdownScheduler();
+    runner.Summary();
+
+    Clog::DisableLogging();
+}

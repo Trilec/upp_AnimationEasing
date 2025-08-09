@@ -1,251 +1,251 @@
-// File: uppsrc/CtrlLib/Animation.h
-#ifndef _Animation_h_
-#define _Animation_h_
-
+#pragma once
+#include <Core/Core.h> // int64, Upp::Ptr, Upp::Pte, Function/Callback
 #include <CtrlCore/CtrlCore.h>
-#include <cmath>
-#include <functional>
 
-namespace Upp {
-
-// -----------------------------------------------------------------------------
-// Easing
-// -----------------------------------------------------------------------------
 namespace Easing {
-using Fn = std::function<double(double)>;
 
-namespace Detail {
-inline double BezierX(double x1, double x2, double t) noexcept
+using Fn = Upp::Function<double(double)>;
+
+namespace detail {
+inline double BX(double x1, double x2, double t)
 {
-	double u = 1.0 - t;
-	return 3.0 * u * u * t * x1 + 3.0 * u * t * t * x2 + t * t * t;
+	double u = 1 - t;
+	return 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t;
 }
-} // namespace Detail
-
-inline double DeCasteljau(double x1, double y1, double x2, double y2, double x) noexcept
+inline double BY(double y1, double y2, double t)
 {
-	if(x <= 0.0)
-		return 0.0;
-	if(x >= 1.0)
-		return 1.0;
-	double t_min = 0.0, t_max = 1.0, t = x;
+	double u = 1 - t;
+	return 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t;
+}
+inline double Solve(double x1, double y1, double x2, double y2, double x)
+{
+	if(x <= 0)
+		return 0;
+	if(x >= 1)
+		return 1;
+	double lo = 0, hi = 1, t = x;
 	for(int i = 0; i < 8; ++i) {
-		double cx = Detail::BezierX(x1, x2, t);
-		if(std::abs(x - cx) < 1e-6)
-			break;
-		(cx < x ? t_min : t_max) = t;
-		t = (t_min + t_max) * 0.5;
+		double cx = BX(x1, x2, t);
+		(cx < x ? lo : hi) = t;
+		t = 0.5 * (lo + hi);
 	}
-	double u = 1.0 - t;
-	return 3.0 * u * u * t * y1 + 3.0 * u * t * t * y2 + t * t * t;
+	return BY(y1, y2, t);
 }
+} // namespace detail
 
-inline Fn Bezier(double x1, double y1, double x2, double y2) noexcept
+inline Fn Bezier(double x1, double y1, double x2, double y2)
 {
-	return [=](double t) noexcept { return DeCasteljau(x1, y1, x2, y2, t); };
+	return [=](double t) { return detail::Solve(x1, y1, x2, y2, t); };
 }
 
-inline const Fn Linear = Bezier(0.0, 0.0, 1.0, 1.0);
-inline const Fn OutBounce = Bezier(0.68, -0.55, 0.265, 1.55);
-inline const Fn InQuad = Bezier(0.55, 0.085, 0.68, 0.53);
-inline const Fn OutQuad = Bezier(0.25, 0.46, 0.45, 0.94);
-inline const Fn InOutQuad = Bezier(0.455, 0.03, 0.515, 0.955);
-inline const Fn InCubic = Bezier(0.55, 0.055, 0.675, 0.19);
-inline const Fn OutCubic = Bezier(0.215, 0.61, 0.355, 1.0);
-inline const Fn InOutCubic = Bezier(0.645, 0.045, 0.355, 1.0);
-inline const Fn InQuart = Bezier(0.895, 0.03, 0.685, 0.22);
-inline const Fn OutQuart = Bezier(0.165, 0.84, 0.44, 1.0);
-inline const Fn InOutQuart = Bezier(0.77, 0.0, 0.175, 1.0);
-inline const Fn InQuint = Bezier(0.755, 0.05, 0.855, 0.06);
-inline const Fn OutQuint = Bezier(0.23, 1.0, 0.32, 1.0);
-inline const Fn InOutQuint = Bezier(0.86, 0.0, 0.07, 1.0);
-inline const Fn InSine = Bezier(0.47, 0.0, 0.745, 0.715);
-inline const Fn OutSine = Bezier(0.39, 0.575, 0.565, 1.0);
-inline const Fn InOutSine = Bezier(0.445, 0.05, 0.55, 0.95);
-inline const Fn InExpo = Bezier(0.95, 0.05, 0.795, 0.035);
-inline const Fn OutExpo = Bezier(0.19, 1.0, 0.22, 1.0);
-inline const Fn InOutExpo = Bezier(1.0, 0.0, 0.0, 1.0);
-inline const Fn InElastic = Bezier(0.6, -0.28, 0.735, 0.045);
-inline const Fn OutElastic = Bezier(0.175, 0.885, 0.32, 1.275);
-inline const Fn InOutElastic = Bezier(0.68, -0.55, 0.265, 1.55);
+// Accessor functions returning const references to heap-allocated Fn (never destroyed at atexit)
+inline const Fn& Linear()        { static Fn* f = new Fn(Bezier(0.000, 0.000, 1.000, 1.000)); return *f; }
+inline const Fn& OutBounce()     { static Fn* f = new Fn(Bezier(0.680, -0.550, 0.265, 1.550)); return *f; }
+inline const Fn& InQuad()        { static Fn* f = new Fn(Bezier(0.550, 0.085, 0.680, 0.530)); return *f; }
+inline const Fn& OutQuad()       { static Fn* f = new Fn(Bezier(0.250, 0.460, 0.450, 0.940)); return *f; }
+inline const Fn& InOutQuad()     { static Fn* f = new Fn(Bezier(0.455, 0.030, 0.515, 0.955)); return *f; }
+inline const Fn& InCubic()       { static Fn* f = new Fn(Bezier(0.550, 0.055, 0.675, 0.190)); return *f; }
+inline const Fn& OutCubic()      { static Fn* f = new Fn(Bezier(0.215, 0.610, 0.355, 1.000)); return *f; }
+inline const Fn& InOutCubic()    { static Fn* f = new Fn(Bezier(0.645, 0.045, 0.355, 1.000)); return *f; }
+inline const Fn& InQuart()       { static Fn* f = new Fn(Bezier(0.895, 0.030, 0.685, 0.220)); return *f; }
+inline const Fn& OutQuart()      { static Fn* f = new Fn(Bezier(0.165, 0.840, 0.440, 1.000)); return *f; }
+inline const Fn& InOutQuart()    { static Fn* f = new Fn(Bezier(0.770, 0.000, 0.175, 1.000)); return *f; }
+inline const Fn& InQuint()       { static Fn* f = new Fn(Bezier(0.755, 0.050, 0.855, 0.060)); return *f; }
+inline const Fn& OutQuint()      { static Fn* f = new Fn(Bezier(0.230, 1.000, 0.320, 1.000)); return *f; }
+inline const Fn& InOutQuint()    { static Fn* f = new Fn(Bezier(0.860, 0.000, 0.070, 1.000)); return *f; }
+inline const Fn& InSine()        { static Fn* f = new Fn(Bezier(0.470, 0.000, 0.745, 0.715)); return *f; }
+inline const Fn& OutSine()       { static Fn* f = new Fn(Bezier(0.390, 0.575, 0.565, 1.000)); return *f; }
+inline const Fn& InOutSine()     { static Fn* f = new Fn(Bezier(0.445, 0.050, 0.550, 0.950)); return *f; }
+inline const Fn& InExpo()        { static Fn* f = new Fn(Bezier(0.950, 0.050, 0.795, 0.035)); return *f; }
+inline const Fn& OutExpo()       { static Fn* f = new Fn(Bezier(0.190, 1.000, 0.220, 1.000)); return *f; }
+inline const Fn& InOutExpo()     { static Fn* f = new Fn(Bezier(1.000, 0.000, 0.000, 1.000)); return *f; }
+inline const Fn& InElastic()     { static Fn* f = new Fn(Bezier(0.600, -0.280, 0.735, 0.045)); return *f; }
+inline const Fn& OutElastic()    { static Fn* f = new Fn(Bezier(0.175, 0.885, 0.320, 1.275)); return *f; }
+inline const Fn& InOutElastic()  { static Fn* f = new Fn(Bezier(0.680, -0.550, 0.265, 1.550)); return *f; }
+
+
 } // namespace Easing
 
 enum AnimMode { Once, Loop, Yoyo };
 
-// -----------------------------------------------------------------------------
-// Animation
-// -----------------------------------------------------------------------------
+using namespace Upp;
+
 class Animation {
 public:
-	struct State : public Pte<State> {
-		Ctrl* owner = nullptr;
-		Function<bool(double)> tick;
-		int time_ms = 500;
-		int count = 1;
+	struct Spec {
+		int duration_ms = 400;
+		int loop_count = 1;
+		int delay_ms = 0;
 		bool yoyo = false;
-		Easing::Fn ease = Easing::InOutQuad;
-		int64 start_time = 0;
-		bool reverse = false;
-		bool paused = false;
-		int64 elapsed_time = 0;
+		Easing::Fn easing = Easing::InOutCubic(); // () since accessors now
 
-		explicit State(Ctrl& c)
-			: owner(&c)
-		{
-		}
-		void Cancel();
+		Upp::Function<bool(double)> tick;
+		Upp::Callback on_start, on_finish, on_cancel;
+		Upp::Callback1<double> on_update;
 	};
 
-	Animation() = default;
-	explicit Animation(Ctrl& c);
+	struct State : Upp::Pte<State> {
+		Upp::Ptr<Upp::Ctrl> owner;
+		Spec spec;
+
+		int64 start_ms = 0;
+		int64 elapsed_ms = 0;
+		bool paused = false;
+		bool reverse = false;
+		int cycles = 1;
+
+		bool Step(int64 now)
+		{
+			if(!owner)
+				return false;
+			if(paused)
+				return true;
+
+			int64 local = now - start_ms + elapsed_ms;
+			if(local < spec.delay_ms)
+				return true;
+
+			double t = double(local - spec.delay_ms) / spec.duration_ms;
+			t = clamp(t, 0.0, 1.0);
+			if(reverse)
+				t = 1.0 - t;
+
+			double e = spec.easing ? spec.easing(t) : t;
+
+			if(spec.on_update)
+				spec.on_update(e);
+			if(spec.tick && !spec.tick(e))
+				return false;
+
+			if(t >= 1.0) {
+				if(spec.yoyo)
+					reverse = !reverse;
+				if(spec.loop_count >= 0 && --cycles <= 0) {
+					if(spec.on_finish)
+						spec.on_finish();
+					return false;
+				}
+				start_ms = now;
+				elapsed_ms = 0;
+			}
+			return true;
+		}
+	};
+
+	explicit Animation(Upp::Ctrl& owner);
 	~Animation();
 
-	Animation(Animation&& other);
-	Animation& operator=(Animation&& other);
+static void ShutdownScheduler();
 
+
+	Animation(Animation&&) = default;
+	Animation& operator=(Animation&&) = default;
 	Animation(const Animation&) = delete;
 	Animation& operator=(const Animation&) = delete;
 
-	// ---- Pattern 2 helpers ----
-	void Rebind(Ctrl& c); // cancel current, bind to new Ctrl
-	template <class F>
-	void Rebuild(Ctrl& c, F builder)
-	{ // convenience wrapper
-		Rebind(c);
-		builder(*this);
-	}
+	/* fluent API */
+	Animation& Duration(int ms);
 
-	// Control
-	void Start();
+	// Easing overloads (const& and &&)
+	Animation& Ease(const Easing::Fn& fn);
+	Animation& Ease(Easing::Fn&& fn);
+
+	Animation& Loop(int n = -1);
+	Animation& Yoyo(bool b = true);
+	Animation& Delay(int ms);
+
+	// Callback overloads (const& and &&)
+	Animation& OnStart(const Upp::Callback& cb);
+	Animation& OnStart(Upp::Callback&& cb);
+
+	Animation& OnFinish(const Upp::Callback& cb);
+	Animation& OnFinish(Upp::Callback&& cb);
+
+	Animation& OnCancel(const Upp::Callback& cb);
+	Animation& OnCancel(Upp::Callback&& cb);
+
+	Animation& OnUpdate(const Upp::Callback1<double>& c);
+	Animation& OnUpdate(Upp::Callback1<double>&& c);
+
+	// Tick functor overloads (const& and &&)
+	Animation& operator()(const Upp::Function<bool(double)>& f);
+	Animation& operator()(Upp::Function<bool(double)>&& f);
+
+	/* control */
+	void Play();
 	void Pause();
 	void Resume();
-	void Stop();   // snap to end & unschedule
-	void Cancel(); // hard kill, no final snap
+	void Stop();
+	void Cancel();
 
 	bool IsPlaying() const;
 	bool IsPaused() const;
-	double GetProgress() const;
+	double Progress() const;
 
-	// Global FPS
+	/* global helpers */
 	static void SetFPS(int fps);
 	static int GetFPS();
-
-	// Fluent setters
-	Animation& Time(int ms)
-	{
-		if(s_handle)
-			s_handle->time_ms = ms;
-		return *this;
-	}
-	Animation& Ease(Easing::Fn fn)
-	{
-		if(s_handle)
-			s_handle->ease = fn;
-		return *this;
-	}
-	Animation& Count(int cnt)
-	{
-		if(s_handle)
-			s_handle->count = cnt;
-		return *this;
-	}
-	Animation& Yoyo(int cnt = -1)
-	{
-		if(s_handle) {
-			s_handle->yoyo = true;
-			s_handle->count = cnt < 0 ? -1 : 2 * cnt;
-		}
-		return *this;
-	}
-	Animation& operator()(Function<bool(double)> f)
-	{
-		if(s_handle)
-			s_handle->tick = pick(f);
-		return *this;
-	}
-
-	// Convenience helpers
-	Animation& Rect(const Upp::Rect& r);
-	Animation& Pos(const Upp::Point& p);
-	Animation& Size(const Upp::Size& sz);
-	Animation& Alpha(double from, double to);
+	static void KillAll();
+	static void KillAllFor(Upp::Ctrl& c);
 
 private:
-	One<State> s_owner;           // pending state before Start()
-	State* s_handle = nullptr;    // pointer to pending state; null after Start()
-	static int s_frameIntervalMs; // ms per tick
+	Upp::Ctrl* owner_; // owner control/window (non-owning)
+	Upp::One<Spec> spec_box_;
+	Spec* spec_ = nullptr;
+	Upp::Ptr<State> live_; // scheduler-owned; Ptr<> avoids UAF if deleted elsewhere
 };
 
-void KillAll();
-
-// -----------------------------------------------------------------------------
-// Generic helpers
-// -----------------------------------------------------------------------------
-template <typename T>
-inline Animation AnimateValue(Ctrl& c, Gate<T> setter, const T& from, const T& to, int ms,
-                              Easing::Fn ease = Easing::InOutQuad, AnimMode mode = Once)
+/* ---------- inline helpers ---------- */
+template <class T>
+inline Animation AnimateValue(Upp::Ctrl& ctrl, Upp::Callback1<const T&> set, T from, T to,
+                              int ms, Easing::Fn ease = Easing::InOutCubic(),
+                              AnimMode mode = Once)
 {
-	Animation a(c);
-	a([=](double t) {
-		if constexpr(std::is_same_v<T, Color>)
-			return setter(Blend(from, to, (float)t));
-		else if constexpr(std::is_same_v<T, Point>)
-			return setter(Point(int(from.x + (to.x - from.x) * t + 0.5),
-			                    int(from.y + (to.y - from.y) * t + 0.5)));
-		else if constexpr(std::is_same_v<T, Size>)
-			return setter(Size(int(from.cx + (to.cx - from.cx) * t + 0.5),
-			                   int(from.cy + (to.cy - from.cy) * t + 0.5)));
-		else if constexpr(std::is_same_v<T, Rect>)
-			return setter(Rect(Lerp(from.TopLeft(), to.TopLeft(), t),
-			                   Lerp(from.GetSize(), to.GetSize(), t)));
+	Animation a(ctrl);
+	a([ctrlPtr = Upp::Ptr<Upp::Ctrl>(&ctrl), set, from, to](double p) -> bool {
+		if(!ctrlPtr)
+			return false;
+		if constexpr(std::is_same_v<T, Upp::Color>)
+			set(Upp::Blend(from, to, int(255 * p)));
+		else if constexpr(std::is_same_v<T, Upp::Point>)
+			set(Upp::Point(int(from.x + (to.x - from.x) * p + .5),
+			               int(from.y + (to.y - from.y) * p + .5)));
+		else if constexpr(std::is_same_v<T, Upp::Size>)
+			set(Upp::Size(int(from.cx + (to.cx - from.cx) * p + .5),
+			              int(from.cy + (to.cy - from.cy) * p + .5)));
+		else if constexpr(std::is_same_v<T, Upp::Rect>)
+			set(Upp::Rect(
+				Upp::Point(int(from.left + (to.left - from.left) * p + .5),
+			               int(from.top + (to.top - from.top) * p + .5)),
+				Upp::Size(int(from.Width() + (to.Width() - from.Width()) * p + .5),
+			              int(from.Height() + (to.Height() - from.Height()) * p + .5))));
 		else
-			return setter(from + (to - from) * t);
+			set(from + (to - from) * p);
+		ctrlPtr->Refresh();
+		return true;
 	})
-		.Time(ms)
+		.Duration(ms)
 		.Ease(ease);
+
 	if(mode == Loop)
-		a.Count(-1);
+		a.Loop(-1);
 	else if(mode == Yoyo)
 		a.Yoyo();
-	a.Start();
-	return a;
+
+	a.Play();
+	return Upp::pick(a);
 }
 
-inline Animation AnimateDouble(Ctrl& c, Gate<double> g, double f, double t, int ms,
-                               Easing::Fn e = Easing::InOutQuad, AnimMode m = Once)
+inline Animation AnimateColor(Upp::Ctrl& c, Upp::Callback1<const Upp::Color&> cb, Upp::Color f,
+                              Upp::Color t, int ms, Easing::Fn e = Easing::InOutCubic(),
+                              AnimMode m = Once)
 {
-	return AnimateValue(c, g, f, t, ms, e, m);
-}
-inline Animation AnimateInteger(Ctrl& c, Gate<int> g, int f, int t, int ms,
-                                Easing::Fn e = Easing::InOutQuad, AnimMode m = Once)
-{
-	return AnimateValue(c, g, f, t, ms, e, m);
-}
-inline Animation AnimateColor(Ctrl& c, Gate<Color> g, Color f, Color t, int ms,
-                              Easing::Fn e = Easing::InOutQuad, AnimMode m = Once)
-{
-	return AnimateValue(c, g, f, t, ms, e, m);
-}
-inline Animation AnimatePoint(Ctrl& c, Gate<Point> g, Point f, Point t, int ms,
-                              Easing::Fn e = Easing::InOutQuad, AnimMode m = Once)
-{
-	return AnimateValue(c, g, f, t, ms, e, m);
-}
-inline Animation AnimateSize(Ctrl& c, Gate<Size> g, Size f, Size t, int ms,
-                             Easing::Fn e = Easing::InOutQuad, AnimMode m = Once)
-{
-	return AnimateValue(c, g, f, t, ms, e, m);
-}
-inline Animation AnimateRect(Ctrl& c, Gate<Rect> g, Rect f, Rect t, int ms,
-                             Easing::Fn e = Easing::InOutQuad, AnimMode m = Once)
-{
-	return AnimateValue(c, g, f, t, ms, e, m);
-}
-inline Animation AnimateAlpha(Ctrl& c, double from, double to, int ms,
-                              Easing::Fn e = Easing::InOutQuad, AnimMode m = Once)
-{
-	return Animation(c).Alpha(from, to).Time(ms).Ease(e).Start(), Animation(c);
+	return AnimateValue<Upp::Color>(c, cb, f, t, ms, e, m);
 }
 
-} // namespace Upp
-#endif
+inline Animation AnimateRect(Upp::Ctrl& c, Upp::Callback1<const Upp::Rect&> cb, Upp::Rect f,
+                             Upp::Rect t, int ms, Easing::Fn e = Easing::InOutCubic(),
+                             AnimMode m = Once)
+{
+	return AnimateValue<Upp::Rect>(c, cb, f, t, ms, e, m);
+}
