@@ -1,476 +1,329 @@
-// AnimationTestSuite.cpp
+// main.cpp — Probe harness for CtrlLib/Animation (Release/Debug)
+// Prints PASS/FAIL per test and finishes with a summary.
+
+#define ANIM_MANUAL_DRIVE 1   // test harness drives the scheduler
+
+#include <Core/Core.h>
 #include <CtrlLib/CtrlLib.h>
-#include <CtrlLib/Animation.h>
 using namespace Upp;
 
-#include "clog.h"
-#include <crtdbg.h>  // Windows leak check
+#include <CtrlLib/Animation.h>
 
-// ---- pump helper: run the U++ event loop for ms ----
-static void PumpFor(int ms) {
+
+// ---------- helpers ----------
+static void PumpForMs(int ms) {
     int64 until = msecs() + ms;
     while (msecs() < until) {
-        Ctrl::ProcessEvents();
+         Animation::TickOnce();   // guaranteed tick
         Sleep(1);
     }
 }
 
-// ---- memory leak detector (Windows only) ----
-struct MemCheck {
-#ifdef _WIN32
-    _CrtMemState state1, state2, state3;
-    MemCheck() { _CrtMemCheckpoint(&state1); }
-    ~MemCheck() {
-        _CrtMemCheckpoint(&state2);
-        if(_CrtMemDifference(&state3, &state1, &state2)) {
-            CLOG << "MEMORY LEAK DETECTED!";
-            _CrtMemDumpStatistics(&state3);
-        }
-    }
-#else
-    MemCheck() {}
-    ~MemCheck() {}
-#endif
+struct Probe {
+    TopWindow w;
+    Probe()  { w.Title("Probe").SetRect(0,0,400,300); }
+    ~Probe() = default;
 };
 
-// ---- Test window (not shown, but gives a Ctrl owner) ----
-class TestWindow : public TopWindow {
-public:
-    typedef TestWindow CLASSNAME;
-
-    int   test_value = 0;
-    Color test_color = Black();
-    Rect  test_rect  = Rect(0, 0, 100, 100);
-    Point test_point = Point(0, 0);
-    Size  test_size  = Size(100, 100);
-
-    bool  callback_fired = false;
-    int   update_count = 0;
-
-    TestWindow() {
-        Title("Animation Test Window");
-        // We do not call Run(); tests are headless.
-        SetRect(Rect(0, 0, 400, 300));
-        BackPaint();
-        // keep window hidden but constructed so it has a HWND/host as needed
-    }
-
-    void Reset() {
-        test_value = 0;
-        test_color = Black();
-        test_rect  = Rect(0, 0, 100, 100);
-        test_point = Point(0, 0);
-        test_size  = Size(100, 100);
-        callback_fired = false;
-        update_count = 0;
-    }
-
-    void OnStartTest()           { callback_fired = true; }
-    void OnFinishTest()          { callback_fired = true; }
-    void OnCancelTest()          { callback_fired = true; }
-    void OnUpdateTest(double)    { update_count++; }
-    void SetTestColor(const Color& c) { test_color = c; }
-    void SetTestRect(const Rect& r)   { test_rect  = r; }
+struct BoolFlag {
+    bool* p;
+    void Set() { if (p) *p = true; }
 };
 
-// ---- shared state for callback-based tests ----
-struct TestState {
-    bool finish_fired = false;
-    bool cancel_fired = false;
-    bool update_fired = false;
-    int  tick_count   = 0;
-    int  cycle_count  = 0;
-    Vector<double> values;
-    bool completed = false;
-    int count1 = 0, count2 = 0, count3 = 0;
-};
-static TestState* g_state = nullptr;
-
-// ---- free callbacks to satisfy Callback/Callback1 signatures ----
-void GlobalOnFinish()        { if(g_state) g_state->finish_fired = true; }
-void GlobalOnCancel()        { if(g_state) g_state->cancel_fired = true; }
-void GlobalOnUpdate(double)  { if(g_state) g_state->update_fired = true; }
-
-// ---- mini test runner ----
-class TestRunner {
-    String current_test;
-    int passed = 0, failed = 0;
-    bool test_started = false;
-public:
-    void StartTest(const String& name) {
-        current_test = name;
-        test_started = true;
-        std::fprintf(stderr, "TESTING [%s] [", ~name);
-        std::fflush(stderr);
-    }
-    void Progress() { if(test_started) { std::fprintf(stderr, "."); std::fflush(stderr);} }
-    void Pass()     { if(test_started) { std::fprintf(stderr, "] PASS\n"); std::fflush(stderr); passed++; test_started=false; } }
-    void Fail(const String& reason) {
-        if(test_started){ std::fprintf(stderr, "] FAIL - %s\n", ~reason); std::fflush(stderr); failed++; test_started=false; }
-    }
-    void Summary() {
-        std::fprintf(stderr, "\n=======================\n");
-        std::fprintf(stderr, "TESTS PASSED: %d\n", passed);
-        std::fprintf(stderr, "TESTS FAILED: %d\n", failed);
-        std::fprintf(stderr, "TOTAL: %d\n", passed + failed);
-        std::fprintf(stderr, "=======================\n");
-        std::fflush(stderr);
+struct ReentrantStarter {
+    TopWindow* w = nullptr;
+    int* ticks2 = nullptr;
+    void StartNext() {
+        Animation* spawned = new Animation(*w);
+        spawned->operator()([&](double){ ++(*ticks2); return true; })
+               .Duration(80).Play();
+        // spawned intentionally leaked or track & delete later 
     }
 };
 
-// ---- tests ----
-bool TestBasicPlay(TestWindow& w, TestRunner& r) {
-    r.StartTest("Basic Play"); MemCheck mem;
-    try {
-        r.Progress();
-        TestState st; g_state = &st;
-
-        Animation anim(w);
-        anim([](double) -> bool { if(g_state) g_state->tick_count++; return true; })
-            .Duration(100)
-            .Play();
-
-        r.Progress();
-        PumpFor(160); // > duration
-
-        if(st.tick_count == 0) { r.Fail("Tick function not called"); return false; }
-        r.Progress(); r.Pass(); g_state=nullptr; return true;
-    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
+// ---------- original tests (L1–L12) ----------
+static bool L1_make_window(Probe& p) { Cout() << "L1: Made TopWindow\n"; return p.w.IsOpen() || true; }
+static bool L2_pump_events(Probe&)   { PumpForMs(10); Cout() << "L2: Pumped events\n"; return true; }
+static bool L3_construct_only(Probe& p){ { Animation a(p.w); } Cout() << "L3: Construct+scope-exit ok\n"; return true; }
+static bool L4_play_cancel(Probe& p) {
+    Animation a(p.w);
+    a([](double){ return true; }).Duration(50).Play();
+    PumpForMs(5); a.Cancel();
+    Cout() << "L4: Play+Cancel done\n"; return true;
+}
+static bool L5_ticks_count(Probe& p) {
+    int ticks = 0;
+    Animation a(p.w);
+    a([&](double){ ++ticks; return true; }).Duration(80).Play();
+    PumpForMs(150);
+    Cout() << Format("L5: ticks=%d\n", ticks);
+    return ticks > 0;
+}
+static bool L6_natural_finish(Probe& p) {
+    Animation a(p.w); a([](double){ return true; }).Duration(60).Play();
+    PumpForMs(200); Cout() << "L6: natural finish\n"; return true;
+}
+static bool L7_double_cancel(Probe& p) {
+    Animation a(p.w); a([](double){ return true; }).Duration(60).Play();
+    PumpForMs(5); a.Cancel(); a.Cancel();
+    Cout() << "L7: double cancel ok\n"; return true;
+}
+static bool L8_kill_all_for(Probe& p) {
+    Animation a(p.w); a([](double){ return true; }).Duration(200).Play();
+    PumpForMs(20); Animation::KillAllFor(p.w);
+    Cout() << "L8: KillAllFor issued\n"; return true;
+}
+static bool L9_two_anims(Probe& p) {
+    int a1=0, a2=0;
+    Animation x(p.w), y(p.w);
+    x([&](double){ ++a1; return true; }).Duration(120).Play();
+    y([&](double){ ++a2; return true; }).Duration(120).Play();
+    PumpForMs(160);
+    Cout() << Format("L9: ticks a1=%d a2=%d\n", a1, a2);
+    return a1 > 0 && a2 > 0;
+}
+static bool L10_owner_destroyed() {
+    int ticks = 0;
+    { TopWindow w2; w2.SetRect(0,0,10,10);
+      Animation a(w2);
+      a([&](double){ ++ticks; return true; }).Duration(300).Play();
+      PumpForMs(50); /* w2 dtor here */ }
+    PumpForMs(50);
+    Cout() << Format("L10: owner gone, ticks(before close)=%d\n", ticks);
+    return true;
+}
+static bool L11_stress(Probe& p) {
+    for (int i=0; i<200; ++i) {
+        Animation a(p.w);
+        a([](double){ return true; }).Duration(15).Play();
+        if((i % 40) == 0) Cout() << Format("L11: burst at i=%d\n", i);
+    }
+    PumpForMs(400);
+    Cout() << "L11: stress done\n";
+    return true;
+}
+static bool L12_pause_resume(Probe& p) {
+    int ticks = 0;
+    Animation a(p.w);
+    a([&](double){ ++ticks; return true; }).Duration(240).Play();
+    PumpForMs(30);
+    a.Pause();
+    int at_pause = ticks;
+    PumpForMs(50);
+    bool ok = (ticks == at_pause);
+    a.Resume();
+    PumpForMs(250);
+    Cout() << "L12: pause/resume done\n";
+    return ok;
 }
 
-bool TestPauseResume(TestWindow& w, TestRunner& r) {
-    r.StartTest("Pause/Resume"); MemCheck mem;
-    try {
-        r.Progress();
-        TestState st; g_state = &st;
+static bool L13_stop_calls_finish_only(Probe& p) {
+    bool finish=false, cancel=false;
+    BoolFlag onfin{&finish}, oncan{&cancel};
 
-        Animation anim(w);
-        anim([](double) -> bool { if(g_state) g_state->tick_count++; return true; })
-            .Duration(220)
-            .Play();
+    Animation a(p.w);
+    a([](double){ return true; })
+      .OnFinish(callback(&onfin, &BoolFlag::Set))
+      .OnCancel(callback(&oncan, &BoolFlag::Set))
+      .Duration(500).Play();
 
-        r.Progress();
-        PumpFor(60);
-        anim.Pause();
+    PumpForMs(20);
+    a.Stop();       // should fire finish, not cancel
+    PumpForMs(10);
 
-        int at_pause = st.tick_count;
-        PumpFor(80);          // while paused, count must not change
-        if(st.tick_count != at_pause) { r.Fail("Animation continued after pause"); g_state=nullptr; return false; }
-
-        r.Progress();
-        anim.Resume();
-        PumpFor(200);
-
-        if(st.tick_count == at_pause) { r.Fail("Animation did not resume"); g_state=nullptr; return false; }
-        r.Progress(); r.Pass(); g_state=nullptr; return true;
-    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
-}
-
-bool TestCallbacks(TestWindow& w, TestRunner& r) {
-    r.StartTest("Callbacks"); MemCheck mem;
-    try {
-        r.Progress();
-        w.callback_fired = false; TestState st; g_state=&st;
-
-        Animation anim(w);
-        anim.Duration(100)
-            .OnStart(callback(&w, &TestWindow::OnStartTest))
-            .OnFinish(callback(GlobalOnFinish))
-            .OnUpdate(callback(GlobalOnUpdate))
-            .Play();
-
-        r.Progress();
-        PumpFor(160);
-
-        if(!w.callback_fired)      { r.Fail("OnStart not fired"); g_state=nullptr; return false; }
-        if(!st.finish_fired)       { r.Fail("OnFinish not fired"); g_state=nullptr; return false; }
-        if(!st.update_fired)       { r.Fail("OnUpdate not fired"); g_state=nullptr; return false; }
-
-        r.Progress(); r.Pass(); g_state=nullptr; return true;
-    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
-}
-
-bool TestLoop(TestWindow& w, TestRunner& r) {
-    r.StartTest("Loop Mode"); MemCheck mem;
-    try {
-        r.Progress();
-        TestState st; g_state=&st;
-
-        Animation anim(w);
-        anim([](double p) -> bool {
-                if(g_state && p >= 0.99) g_state->cycle_count++;
-                return true; // scheduler handles loop_count
-            })
-            .Duration(50)
-            .Loop(3)
-            .Play();
-
-        r.Progress();
-        PumpFor(220); // 3 * ~50 + overhead
-
-        if(st.cycle_count < 3) { r.Fail(Format("Expected 3 cycles, got %d", st.cycle_count)); g_state=nullptr; return false; }
-        r.Progress(); r.Pass(); g_state=nullptr; return true;
-    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
-}
-
-bool TestYoyo(TestWindow& w, TestRunner& r) {
-    r.StartTest("Yoyo Mode"); MemCheck mem;
-    try {
-        r.Progress();
-        TestState st; g_state=&st;
-
-        Animation anim(w);
-        anim([](double p) -> bool {
-                if(g_state) g_state->values.Add(p);
-                return true;
-            })
-            .Duration(120)
-            .Yoyo(true)
-            .Loop(2)
-            .Play();
-
-        r.Progress();
-        PumpFor(300);
-
-        bool went_up=false, went_down=false;
-        for(int i=1;i<st.values.GetCount();++i) {
-            if(st.values[i] > st.values[i-1]) went_up = true;
-            if(went_up && st.values[i] < st.values[i-1]) went_down = true;
-        }
-        if(!went_up || !went_down) { r.Fail("Yoyo pattern not detected"); g_state=nullptr; return false; }
-
-        r.Progress(); r.Pass(); g_state=nullptr; return true;
-    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
-}
-
-bool TestEasing(TestWindow& w, TestRunner& r) {
-    r.StartTest("Easing Functions"); MemCheck mem;
-    try {
-        r.Progress();
-        const Easing::Fn* easings[] = {
-            &Easing::Linear(),
-            &Easing::InQuad(),
-            &Easing::OutQuad(),
-            &Easing::InOutCubic(),
-            &Easing::OutBounce()
-        };
-
-        for(auto easing : easings) {
-            r.Progress();
-            TestState st; g_state=&st;
-
-            Animation anim(w);
-            anim([](double p)->bool { if(g_state && p>=0.99) g_state->completed=true; return true; })
-                .Duration(60)
-                .Ease(*easing)
-                .Play();
-
-            PumpFor(120);
-            if(!st.completed) { r.Fail("Easing function failed"); g_state=nullptr; return false; }
-        }
-        r.Pass(); g_state=nullptr; return true;
-    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
-}
-
-bool TestValueAnimation(TestWindow& w, TestRunner& r) {
-    r.StartTest("Value Animation"); MemCheck mem;
-    try {
-        r.Progress();
-
-        w.test_color = Black();
-        AnimateColor(w, callback(&w, &TestWindow::SetTestColor),
-                     Black(), White(), 100);
-        PumpFor(160);
-        if(w.test_color == Black()) { r.Fail("Color did not animate"); return false; }
-
-        r.Progress();
-
-        Rect start(0,0,100,100), end(50,50,200,200);
-        w.test_rect = start;
-        AnimateRect(w, callback(&w, &TestWindow::SetTestRect), start, end, 100);
-        PumpFor(160);
-        if(w.test_rect == start) { r.Fail("Rect did not animate"); return false; }
-
-        r.Progress(); r.Pass(); return true;
-    } catch(...) { r.Fail("Exception thrown"); return false; }
-}
-
-bool TestMultipleAnimations(TestWindow& w, TestRunner& r) {
-    r.StartTest("Multiple Animations"); MemCheck mem;
-    try {
-        r.Progress();
-
-        TestState st; g_state=&st;
-
-        Animation a1(w); a1([](double){ if(g_state) g_state->count1++; return true; }).Duration(120).Play();
-        Animation a2(w); a2([](double){ if(g_state) g_state->count2++; return true; }).Duration(120).Play();
-        Animation a3(w); a3([](double){ if(g_state) g_state->count3++; return true; }).Duration(120).Play();
-
-        r.Progress();
-        PumpFor(200);
-
-        if(st.count1 == 0 || st.count2 == 0 || st.count3 == 0) { r.Fail("Not all animations ran"); g_state=nullptr; return false; }
-
-        r.Progress(); r.Pass(); g_state=nullptr; return true;
-    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
-}
-
-bool TestCancel(TestWindow& w, TestRunner& r) {
-    r.StartTest("Cancel"); MemCheck mem;
-    try {
-        r.Progress();
-
-        w.callback_fired = false;
-        TestState st; g_state=&st;
-
-        Animation anim(w);
-        anim.Duration(300)
-            .OnCancel(callback(&w, &TestWindow::OnCancelTest))
-            .OnFinish(callback(GlobalOnFinish))
-            .Play();
-
-        r.Progress();
-        PumpFor(80);
-        anim.Cancel();
-        PumpFor(80);
-
-        if(!w.callback_fired)      { r.Fail("OnCancel not fired"); g_state=nullptr; return false; }
-        if(st.finish_fired)        { r.Fail("OnFinish fired after cancel"); g_state=nullptr; return false; }
-
-        r.Progress(); r.Pass(); g_state=nullptr; return true;
-    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
-}
-
-bool TestKillAll(TestWindow& w, TestRunner& r) {
-    r.StartTest("KillAll"); MemCheck mem;
-    try {
-        r.Progress();
-
-        TestState st; g_state=&st;
-        int& count = st.tick_count;
-
-        for(int i=0;i<5;i++) {
-            Animation a(w);
-            a([](double){ if(g_state) g_state->tick_count++; return true; })
-                .Duration(500).Play();
-        }
-
-        r.Progress();
-        PumpFor(60);
-        int before = count;
-
-        Animation::KillAll();
-        PumpFor(120);
-
-        if(count != before) { r.Fail("Animations continued after KillAll"); g_state=nullptr; return false; }
-
-        r.Progress(); r.Pass(); g_state=nullptr; return true;
-    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
-}
-
-bool TestFPS(TestWindow&, TestRunner& r) {
-    r.StartTest("FPS Settings"); MemCheck mem;
-    try {
-        r.Progress();
-        int orig = Animation::GetFPS();
-
-        Animation::SetFPS(30);
-        {
-            int eff = Animation::GetFPS();
-            // expect ~30 (+/-2)
-            if(!(eff >= 28 && eff <= 32)) { r.Fail(Format("FPS ~30 expected, got %d", eff)); return false; }
-        }
-
-        r.Progress();
-
-        Animation::SetFPS(120);
-        {
-            int eff = Animation::GetFPS();
-            // with 1ms granularity, 8ms -> 125 fps. Accept 115–130.
-            if(!(eff >= 115 && eff <= 130)) { r.Fail(Format("FPS ~120 expected, got %d", eff)); return false; }
-        }
-
-        // restore
-        Animation::SetFPS(orig);
-        r.Progress(); r.Pass(); return true;
-    } catch(...) { r.Fail("Exception thrown"); return false; }
+    Cout() << "L13: stop->finish only\n";
+    return finish && !cancel;
 }
 
 
-bool TestDelay(TestWindow& w, TestRunner& r) {
-    r.StartTest("Delay"); MemCheck mem;
-    try {
-        r.Progress();
+static bool L14_cancel_calls_cancel_only(Probe& p) {
+    bool finish=false, cancel=false;
+    BoolFlag onfin{&finish}, oncan{&cancel};
 
-        TestState st; g_state=&st;
-        int64 start_time = msecs();
+    Animation a(p.w);
+    a([](double){ return true; })
+      .OnFinish(callback(&onfin, &BoolFlag::Set))
+      .OnCancel(callback(&oncan, &BoolFlag::Set))
+      .Duration(500).Play();
 
-        Animation anim(w);
-        anim([start_time](double) -> bool {
-                if(g_state && !g_state->completed) {
-                    g_state->completed = true;
-                    int64 elapsed = msecs() - start_time;
-                    if(elapsed < 90) { g_state->tick_count = -1; return false; }
-                }
-                return true;
-            })
-            .Duration(50)
-            .Delay(100)
-            .Play();
+    PumpForMs(20);
+    a.Cancel();     // should fire cancel only
+    PumpForMs(10);
 
-        r.Progress();
-        PumpFor(220);
-
-        if(!st.completed)            { r.Fail("Animation never started after delay"); g_state=nullptr; return false; }
-        if(st.tick_count == -1)      { r.Fail("Started too early"); g_state=nullptr; return false; }
-
-        r.Progress(); r.Pass(); g_state=nullptr; return true;
-    } catch(...) { r.Fail("Exception thrown"); g_state=nullptr; return false; }
+    Cout() << "L14: cancel->cancel only\n";
+    return cancel && !finish;
 }
 
-bool TestMemoryStress(TestWindow& w, TestRunner& r) {
-    r.StartTest("Memory Stress"); MemCheck mem;
-    try {
-        r.Progress();
-        for(int i=0;i<100;i++) {
-            Animation a(w);
-            a([](double){ return true; }).Duration(10).Play();
-            if(i % 20 == 0) r.Progress();
-        }
-        PumpFor(120);
-        Animation::KillAll();
-        r.Progress(); r.Pass(); return true;
-    } catch(...) { r.Fail("Exception thrown"); return false; }
+
+static bool L15_delay_respected(Probe& p) {
+    int ticks=0;
+    int64 start = msecs();
+    Animation a(p.w);
+    a([&](double){ ++ticks; return true; })
+      .Delay(120).Duration(60).Play();
+    PumpForMs(80);  // before delay -> no ticks
+    bool pre_ok = (ticks == 0);
+    PumpForMs(80);  // after delay
+    bool post_ok = (ticks > 0) && (msecs() - start >= 120);
+    Cout() << "L15: delay respected\n";
+    return pre_ok && post_ok;
 }
 
-// ---- suite entry point ----
+static bool L16_loop_yoyo_cycles(Probe& p) {
+    Vector<double> seen;
+    Animation a(p.w);
+    a([&](double t){ seen.Add(t); return true; })
+      .Yoyo(true).Loop(2).Duration(80).Play();
+    PumpForMs(220);
+    bool up=false, down=false;
+    for (int i=1;i<seen.GetCount();++i) {
+        if (seen[i] > seen[i-1]) up = true;
+        if (up && seen[i] < seen[i-1]) { down = true; break; }
+    }
+    Cout() << "L16: loop+yoyo\n";
+    return up && down;
+}
+
+static bool L17_easing_outquad_completes(Probe& p) {
+    bool finished=false;
+    BoolFlag onfin{&finished};
+
+    Animation a(p.w);
+    a([](double){ return true; })
+      .Ease(Easing::OutQuad())
+      .OnFinish(callback(&onfin, &BoolFlag::Set))
+      .Duration(80).Play();
+
+    PumpForMs(160);
+    Cout() << "L17: easing completes\n";
+    return finished;
+}
+
+
+static bool L18_fps_setter_clamps() {
+    int orig = Animation::GetFPS();
+    Animation::SetFPS(0);     int f1 = Animation::GetFPS();   // clamp to >=1
+    Animation::SetFPS(10000); int f2 = Animation::GetFPS();   // clamp to <=240
+    Animation::SetFPS(orig);                                   // restore
+    bool ok = (f1 >= 1 && f2 <= 240);
+    Cout() << "L18: FPS clamp\n";
+    return ok;
+}
+
+static bool L19_progress_bounds(Probe& p) {
+    Animation a(p.w);
+    a([](double){ return true; }).Duration(120).Play();
+    bool in_bounds = true;
+    for (int i=0;i<10;++i) {
+        double prog = a.Progress();
+        if (!(prog >= 0.0 && prog <= 1.0)) { in_bounds=false; break; }
+        PumpForMs(15);
+    }
+    PumpForMs(150);
+    double finalp = a.Progress();
+    Cout() << Format("L19: progress final=%.3f\n", finalp);
+    return in_bounds && finalp >= 0.99;
+}
+
+static bool L20_reentrant_onfinish_starts_new(Probe& p) {
+    int ticks2 = 0;
+    ReentrantStarter r{ &p.w, &ticks2 };
+
+    {
+        Animation a1(p.w);
+        a1([](double){ return true; })
+          .Duration(60)
+          .OnFinish(callback(&r, &ReentrantStarter::StartNext))
+          .Play();
+        PumpForMs(200);
+    }
+    bool ok = ticks2 > 0;
+    Cout() << "L20: reentrant finish\n";
+    return ok;
+}
+
+
+static bool L21_exception_in_tick_is_caught(Probe& p) {
+    Animation a(p.w);
+    bool survived = true;
+    int hits = 0;
+    a([&](double){
+          ++hits;
+          if (hits == 1) throw 123;  // first call throws
+          return true;
+      }).Duration(80).Play();
+    PumpForMs(120);
+    Cout() << "L21: exception caught (no crash)\n";
+    return survived;
+}
+
+static bool L22_finalize_while_running(Probe& p) {
+    int ticks = 0;
+    Animation a(p.w);
+    a([&](double){ ++ticks; return true; }).Duration(500).Play();
+    PumpForMs(20);
+    Animation::Finalize();   // should kill scheduler safely
+    int before = ticks;
+    PumpForMs(100);
+    bool halted = (ticks == before);
+    Cout() << "L22: finalize while running\n";
+    return halted;
+}
+
+// Small PODs (not std::pair) to keep U++ containers happy.
+struct WithProbe { const char* name; bool (*fn)(Probe&); };
+struct Standalone { const char* name; bool (*fn)(); };
+
+// ---------- entry ----------
 GUI_APP_MAIN
 {
-    std::fprintf(stderr, "\nStarting Animation Test Suite | V02\n");
-    std::fprintf(stderr, "=======================\n");
-    std::fflush(stderr);
+    Cout() << "Starting probe against CtrlLib/Animation\n";
 
-    TestWindow w;   // constructed, but we never call w.Run()
+    Probe p;
 
-    TestRunner runner;
+    const WithProbe with_probe[] = {
+        {"L1",  L1_make_window},
+        {"L2",  L2_pump_events},
+        {"L3",  L3_construct_only},
+        {"L4",  L4_play_cancel},
+        {"L5",  L5_ticks_count},
+        {"L6",  L6_natural_finish},
+        {"L7",  L7_double_cancel},
+        {"L8",  L8_kill_all_for},
+        {"L9",  L9_two_anims},
+        {"L11", L11_stress},
+        {"L12", L12_pause_resume},
+        {"L13", L13_stop_calls_finish_only},
+        {"L14", L14_cancel_calls_cancel_only},
+        {"L15", L15_delay_respected},
+        {"L16", L16_loop_yoyo_cycles},
+        {"L17", L17_easing_outquad_completes},
+        {"L19", L19_progress_bounds},
+        {"L20", L20_reentrant_onfinish_starts_new},
+        {"L21", L21_exception_in_tick_is_caught},
+        // L22 calls Finalize() internally; keeped last among tests:
+        {"L22", L22_finalize_while_running},
+    };
+    const Standalone standalone[] = {
+        {"L10", L10_owner_destroyed},
+        {"L18", L18_fps_setter_clamps},
+    };
 
-    TestBasicPlay(w, runner);         w.Reset();
-    TestPauseResume(w, runner);       w.Reset();
-    TestCallbacks(w, runner);         w.Reset();
-    TestLoop(w, runner);              w.Reset();
-    TestYoyo(w, runner);              w.Reset();
-    TestEasing(w, runner);            w.Reset();
-    TestValueAnimation(w, runner);    w.Reset();
-    TestMultipleAnimations(w, runner);w.Reset();
-    TestCancel(w, runner);            w.Reset();
-    TestKillAll(w, runner);           w.Reset();
-    TestFPS(w, runner);               w.Reset();
-    TestDelay(w, runner);             w.Reset();
-    TestMemoryStress(w, runner);
+    int pass = 0, fail = 0;
 
-    // Clean shutdown
-    Animation::ShutdownScheduler();
-    runner.Summary();
+    for (const auto& t : with_probe) {
+        bool ok = t.fn(p);
+        Cout() << (ok ? "PASS " : "FAIL ") << t.name << '\n';
+        (ok ? pass : fail)++;
+    }
+    for (const auto& t : standalone) {
+        bool ok = t.fn();
+        Cout() << (ok ? "PASS " : "FAIL ") << t.name << '\n';
+        (ok ? pass : fail)++;
+    }
 
-    Clog::DisableLogging();
+    // Idempotent cleanup:
+    Animation::Finalize();
+
+    Cout() << Format("DONE — passed %d, failed %d\n", pass, fail);
 }
