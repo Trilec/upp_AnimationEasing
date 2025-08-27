@@ -5,14 +5,18 @@ uses
 	CtrlLib;
 
 include
-	,
+	.,
 	/include;
 
 file
+	ConsoleAnim.cpp,
+	ConsoleAnim.h,
+	GUIAnim.cpp,
+	GUIAnim.h,
 	main.cpp,
 	include/Animation.h,
 	src/Animation.cpp;
 
 mainconfig
-	"" = "CONSOLE";
+	"" = "";
 
