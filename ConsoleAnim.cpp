@@ -240,60 +240,87 @@ static bool L22_finalize_while_running(Probe& p) {
     return halted;
 }
 
+// ---------- pretty test runner with descriptions ----------
+namespace {
+
+struct TestSummary {
+    int total  = 0;
+    int passed = 0;
+    int failed = 0;
+};
+
+
+static void PrintLineResult(int id, const String& desc, bool ok)
+{
+    // left-pad id to 2 digits; align description to 55 columns
+    String status = ok ? "PASS" : "FAIL";
+    Cout() << Format("Test %02d: %-55.55s [ %s ]\n", id, desc, status);
+}
+
+struct TestCase {
+    int         id;
+    const char* desc;
+    bool        needs_probe;         // true -> call with Probe&, false -> standalone
+    bool      (*fn_with)(Probe&);
+    bool      (*fn_standalone)();
+};
+
+} // anon
+
 // ---------- entry ----------
 namespace ConsoleAnim {
+
 bool RunProbe()
 {
-    Cout() << "Starting probe against CtrlLib/Animation\n";
-    Probe p;
 
-    struct WithProbe { const char* name; bool (*fn)(Probe&); };
-    struct Standalone { const char* name; bool (*fn)(); };
 
-    const WithProbe with_probe[] = {
-        {"L1",  L1_make_window},
-        {"L2",  L2_pump_events},
-        {"L3",  L3_construct_only},
-        {"L4",  L4_play_cancel},
-        {"L5",  L5_ticks_count},
-        {"L6",  L6_natural_finish},
-        {"L7",  L7_double_cancel},
-        {"L8",  L8_kill_all_for},
-        {"L9",  L9_two_anims},
-        {"L11", L11_stress},
-        {"L12", L12_pause_resume},
-        {"L13", L13_stop_calls_finish_only},
-        {"L14", L14_cancel_calls_cancel_only},
-        {"L15", L15_delay_respected},
-        {"L16", L16_loop_yoyo_cycles},
-        {"L17", L17_easing_outquad_completes},
-        {"L19", L19_progress_bounds},
-        {"L20", L20_reentrant_onfinish_starts_new},
-        {"L21", L21_exception_in_tick_is_caught},
-        {"L22", L22_finalize_while_running},
-    };
-    const Standalone standalone[] = {
-        {"L10", L10_owner_destroyed},
-        {"L18", L18_fps_setter_clamps},
+    Probe p; // single TopWindow reused by with-probe tests
+
+    const TestCase tests[] = {
+        {  1, "TopWindow can be created",                               true,  L1_make_window,                     nullptr },
+        {  2, "Manual pump advances scheduler",                         true,  L2_pump_events,                     nullptr },
+        {  3, "Animation construct & scope exit are safe",              true,  L3_construct_only,                  nullptr },
+        {  4, "Play then Cancel stops cleanly",                         true,  L4_play_cancel,                     nullptr },
+        {  5, "Tick callback is invoked (>0 hits)",                     true,  L5_ticks_count,                     nullptr },
+        {  6, "Animation reaches natural finish",                       true,  L6_natural_finish,                  nullptr },
+        {  7, "Double Cancel is harmless",                              true,  L7_double_cancel,                   nullptr },
+        {  8, "KillAllFor aborts animations for owner",                 true,  L8_kill_all_for,                    nullptr },
+        {  9, "Two animations can run concurrently",                    true,  L9_two_anims,                       nullptr },
+        { 10, "Owner destruction stops its animation",                  false, nullptr,                            L10_owner_destroyed },
+        { 11, "Stress burst of short animations completes",             true,  L11_stress,                         nullptr },
+        { 12, "Pause/Resume holds time and continues",                  true,  L12_pause_resume,                   nullptr },
+        { 13, "Stop triggers finish only (not cancel)",                 true,  L13_stop_calls_finish_only,         nullptr },
+        { 14, "Cancel triggers cancel only (not finish)",               true,  L14_cancel_calls_cancel_only,       nullptr },
+        { 15, "Start delay is respected",                               true,  L15_delay_respected,                nullptr },
+        { 16, "Loop + Yoyo performs up and down legs",                  true,  L16_loop_yoyo_cycles,               nullptr },
+        { 17, "OutQuad easing completes and fires finish",              true,  L17_easing_outquad_completes,       nullptr },
+        { 18, "SetFPS clamps to valid range [1..240]",                  false, nullptr,                            L18_fps_setter_clamps },
+        { 19, "Progress stays in [0..1] and ends near 1",               true,  L19_progress_bounds,                nullptr },
+        { 20, "OnFinish may safely start another animation",            true,  L20_reentrant_onfinish_starts_new,  nullptr },
+        { 21, "Exception in tick is caught (no crash)",                 true,  L21_exception_in_tick_is_caught,    nullptr },
+        { 22, "Finalize halts running animations",                      true,  L22_finalize_while_running,         nullptr },
     };
 
-    int pass = 0, fail = 0;
+    Cout() << "Headless Test Suite for Animation Library\n";
+    Cout() << "-----------------------------------------\n";
 
-    for (const auto& t : with_probe) {
-        bool ok = t.fn(p);
-        Cout() << (ok ? "PASS " : "FAIL ") << t.name << '\n';
-        (ok ? pass : fail)++;
-    }
-    for (const auto& t : standalone) {
-        bool ok = t.fn();
-        Cout() << (ok ? "PASS " : "FAIL ") << t.name << '\n';
-        (ok ? pass : fail)++;
+    TestSummary sum;
+    for(const TestCase& t : tests) {
+        bool ok = t.needs_probe ? t.fn_with(p) : t.fn_standalone();
+        PrintLineResult(t.id, t.desc, ok);
+        ++sum.total;
+        if(ok) ++sum.passed; else ++sum.failed;
     }
 
-    // Idempotent cleanup:
+    // Idempotent cleanup
     Animation::Finalize();
 
-    Cout() << Format("DONE — passed %d, failed %d\n", pass, fail);
-    return fail == 0;
+    Cout() << '\n'
+           << "Summary: " << sum.total << " tests, "
+           << sum.passed << " passed, "
+           << sum.failed << " failed.\n";
+
+    return sum.failed == 0;
 }
+
 } // namespace ConsoleAnim
