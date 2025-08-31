@@ -8,7 +8,7 @@
 // 2025-08-27 — yoyo fix, naming clarity, optimized scheduler
 // 2025-08-27 — adjusted yoyo cycle count in Play, catch all exceptions
 
-#include <CtrlLib/Animation.h>
+#include <Animation.h>
 
 using namespace Upp;
 

@@ -4,10 +4,10 @@
 #define ANIM_MANUAL_DRIVE 1   // this TU drives the scheduler manually
 
 #include <Core/Core.h>
-#include <CtrlLib/CtrlLib.h>
+
 using namespace Upp;
 
-#include <CtrlLib/Animation.h>
+#include <Animation.h>
 #include "ConsoleAnim.h"
 
 // ---------- helpers ----------

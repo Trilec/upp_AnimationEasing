@@ -1,5 +1,5 @@
 #pragma once
-#include <CtrlLib/CtrlLib.h>
+#include <CtrlCore/CtrlCore.h>
 
 namespace ConsoleAnim {
 // Runs the full probe suite. Returns true if all pass.

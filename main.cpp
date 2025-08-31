@@ -1,7 +1,7 @@
 // main.cpp — runs console probe first, then opens the GUI animation lab.
 
 #include <CtrlLib/CtrlLib.h>
-#include <CtrlLib/Animation.h>
+#include <Animation.h>
 
 using namespace Upp;
 

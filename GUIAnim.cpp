@@ -17,7 +17,7 @@
 //
 // NOTE: requires #include <CtrlLib/Animation.h> and Animation::Finalize() in main.
 
-#include <CtrlLib/Animation.h>
+#include <Animation.h>
 #include <CtrlLib/CtrlLib.h>
 using namespace Upp;
 
