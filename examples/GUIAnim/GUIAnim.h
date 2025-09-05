@@ -1,4 +1,5 @@
 #pragma once
+
 #include <CtrlLib/CtrlLib.h>
 
 namespace GUIAnim {

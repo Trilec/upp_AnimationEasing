@@ -1,9 +1,9 @@
 // ConsoleAnim.cpp — console probe harness for CtrlLib/Animation
 // Uses manual ticking so results are deterministic across platforms.
 
-#define ANIM_MANUAL_DRIVE 1   // this TU drives the scheduler manually
 
 #include <Core/Core.h>
+#include <CtrlLib/CtrlLib.h>
 
 using namespace Upp;
 

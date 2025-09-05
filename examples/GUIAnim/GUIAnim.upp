@@ -1,0 +1,14 @@
+description "GUI demo for Animation\377";
+
+uses
+    Core,
+    CtrlLib,
+    Animation;
+
+file
+    main.cpp,
+    GUIAnim.cpp,
+    GUIAnim.h;
+
+mainconfig
+    "" = "";
