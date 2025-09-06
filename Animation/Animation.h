@@ -40,30 +40,29 @@ inline double Solve(double x1,double y1,double x2,double y2,double x){
 }}
 inline Fn Bezier(double x1,double y1,double x2,double y2){ return [=](double t){ return detail::Solve(x1,y1,x2,y2,t); }; }
 
-// Accessors: heap-leaked by design to avoid atexit order issues
-inline const Fn& Linear()        { static Fn* f = new Fn(Bezier(0.000, 0.000, 1.000, 1.000)); return *f; }
-inline const Fn& OutBounce()     { static Fn* f = new Fn(Bezier(0.680, -0.550, 0.265, 1.550)); return *f; }
-inline const Fn& InQuad()        { static Fn* f = new Fn(Bezier(0.550, 0.085, 0.680, 0.530)); return *f; }
-inline const Fn& OutQuad()       { static Fn* f = new Fn(Bezier(0.250, 0.460, 0.450, 0.940)); return *f; }
-inline const Fn& InOutQuad()     { static Fn* f = new Fn(Bezier(0.455, 0.030, 0.515, 0.955)); return *f; }
-inline const Fn& InCubic()       { static Fn* f = new Fn(Bezier(0.550, 0.055, 0.675, 0.190)); return *f; }
-inline const Fn& OutCubic()      { static Fn* f = new Fn(Bezier(0.215, 0.610, 0.355, 1.000)); return *f; }
-inline const Fn& InOutCubic()    { static Fn* f = new Fn(Bezier(0.645, 0.045, 0.355, 1.000)); return *f; }
-inline const Fn& InQuart()       { static Fn* f = new Fn(Bezier(0.895, 0.030, 0.685, 0.220)); return *f; }
-inline const Fn& OutQuart()      { static Fn* f = new Fn(Bezier(0.165, 0.840, 0.440, 1.000)); return *f; }
-inline const Fn& InOutQuart()    { static Fn* f = new Fn(Bezier(0.770, 0.000, 0.175, 1.000)); return *f; }
-inline const Fn& InQuint()       { static Fn* f = new Fn(Bezier(0.755, 0.050, 0.855, 0.060)); return *f; }
-inline const Fn& OutQuint()      { static Fn* f = new Fn(Bezier(0.230, 1.000, 0.320, 1.000)); return *f; }
-inline const Fn& InOutQuint()    { static Fn* f = new Fn(Bezier(0.860, 0.000, 0.070, 1.000)); return *f; }
-inline const Fn& InSine()        { static Fn* f = new Fn(Bezier(0.470, 0.000, 0.745, 0.715)); return *f; }
-inline const Fn& OutSine()       { static Fn* f = new Fn(Bezier(0.390, 0.575, 0.565, 1.000)); return *f; }
-inline const Fn& InOutSine()     { static Fn* f = new Fn(Bezier(0.445, 0.050, 0.550, 0.950)); return *f; }
-inline const Fn& InExpo()        { static Fn* f = new Fn(Bezier(0.950, 0.050, 0.795, 0.035)); return *f; }
-inline const Fn& OutExpo()       { static Fn* f = new Fn(Bezier(0.190, 1.000, 0.220, 1.000)); return *f; }
-inline const Fn& InOutExpo()     { static Fn* f = new Fn(Bezier(1.000, 0.000, 0.000, 1.000)); return *f; }
-inline const Fn& InElastic()     { static Fn* f = new Fn(Bezier(0.600, -0.280, 0.735, 0.045)); return *f; }
-inline const Fn& OutElastic()    { static Fn* f = new Fn(Bezier(0.175, 0.885, 0.320, 1.275)); return *f; }
-inline const Fn& InOutElastic()  { static Fn* f = new Fn(Bezier(0.680, -0.550, 0.265, 1.550)); return *f; }
+inline const Fn& Linear()        { static auto f = Upp::MakeOne<Fn>(Bezier(0.000, 0.000, 1.000, 1.000));  return *f; }
+inline const Fn& OutBounce()     { static auto f = Upp::MakeOne<Fn>(Bezier(0.680, -0.550, 0.265, 1.550)); return *f; }
+inline const Fn& InQuad()        { static auto f = Upp::MakeOne<Fn>(Bezier(0.550, 0.085, 0.680, 0.530));  return *f; }
+inline const Fn& OutQuad()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.250, 0.460, 0.450, 0.940));  return *f; }
+inline const Fn& InOutQuad()     { static auto f = Upp::MakeOne<Fn>(Bezier(0.455, 0.030, 0.515, 0.955));  return *f; }
+inline const Fn& InCubic()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.550, 0.055, 0.675, 0.190));  return *f; }
+inline const Fn& OutCubic()      { static auto f = Upp::MakeOne<Fn>(Bezier(0.215, 0.610, 0.355, 1.000));  return *f; }
+inline const Fn& InOutCubic()    { static auto f = Upp::MakeOne<Fn>(Bezier(0.645, 0.045, 0.355, 1.000));  return *f; }
+inline const Fn& InQuart()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.895, 0.030, 0.685, 0.220));  return *f; }
+inline const Fn& OutQuart()      { static auto f = Upp::MakeOne<Fn>(Bezier(0.165, 0.840, 0.440, 1.000));  return *f; }
+inline const Fn& InOutQuart()    { static auto f = Upp::MakeOne<Fn>(Bezier(0.770, 0.000, 0.175, 1.000));  return *f; }
+inline const Fn& InQuint()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.755, 0.050, 0.855, 0.060));  return *f; }
+inline const Fn& OutQuint()      { static auto f = Upp::MakeOne<Fn>(Bezier(0.230, 1.000, 0.320, 1.000));  return *f; }
+inline const Fn& InOutQuint()    { static auto f = Upp::MakeOne<Fn>(Bezier(0.860, 0.000, 0.070, 1.000));  return *f; }
+inline const Fn& InSine()        { static auto f = Upp::MakeOne<Fn>(Bezier(0.470, 0.000, 0.745, 0.715));  return *f; }
+inline const Fn& OutSine()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.390, 0.575, 0.565, 1.000));  return *f; }
+inline const Fn& InOutSine()     { static auto f = Upp::MakeOne<Fn>(Bezier(0.445, 0.050, 0.550, 0.950));  return *f; }
+inline const Fn& InExpo()        { static auto f = Upp::MakeOne<Fn>(Bezier(0.950, 0.050, 0.795, 0.035));  return *f; }
+inline const Fn& OutExpo()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.190, 1.000, 0.220, 1.000));  return *f; }
+inline const Fn& InOutExpo()     { static auto f = Upp::MakeOne<Fn>(Bezier(1.000, 0.000, 0.000, 1.000));  return *f; }
+inline const Fn& InElastic()     { static auto f = Upp::MakeOne<Fn>(Bezier(0.600, -0.280, 0.735, 0.045)); return *f; }
+inline const Fn& OutElastic()    { static auto f = Upp::MakeOne<Fn>(Bezier(0.175, 0.885, 0.320, 1.275));  return *f; }
+inline const Fn& InOutElastic()  { static auto f = Upp::MakeOne<Fn>(Bezier(0.680, -0.550, 0.265, 1.550)); return *f; }
 } // namespace Easing
 
 
