@@ -20,7 +20,9 @@
 // - Progress() always returns [0..1]. After Stop() it is 1.0, after Cancel()
 //   it remains the last seen forward progress.
 
-#pragma once
+#ifndef _Animation_Animation_h_
+#define _Animation_Animation_h_
+
 #include <Core/Core.h>
 #include <CtrlCore/CtrlCore.h>
 
@@ -204,3 +206,5 @@ inline Animation AnimateRect (Ctrl& c, Callback1<const Rect&>  cb, Rect  f, Rect
 { return AnimateValue<Rect>(c, cb, f, t, ms, e); }
 
 } // namespace Upp
+
+#endif // _GUIAnim_GUIAnim_h_

@@ -7,7 +7,7 @@
 
 using namespace Upp;
 
-#include <Animation.h>
+#include <Animation/Animation.h> 
 #include "ConsoleAnim.h"
 
 // ---------- helpers ----------
