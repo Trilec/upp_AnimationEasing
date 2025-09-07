@@ -52,41 +52,30 @@ namespace detail {
 
 inline Fn Bezier(double x1,double y1,double x2,double y2){ return [=](double t){ return detail::Solve(x1,y1,x2,y2,t); }; }
 
-// Accessors: heap-leaked by design to avoid atexit order issues
-// helper macro to define a preset with One<Fn>
-#define EASE_PRESET(name, X1,Y1,X2,Y2)                  \
-    inline const Fn& name(){                             \
-        static Upp::One<Fn> f;                           \
-        ONCELOCK { f.Create() = Bezier(X1,Y1,X2,Y2); }   \
-        return *f;                                       \
-    }
-
-	// CSS-like presets
-	EASE_PRESET(Linear,        0.000, 0.000, 1.000, 1.000)
-	EASE_PRESET(OutBounce,     0.680, -0.550, 0.265, 1.550)
-	EASE_PRESET(InQuad,        0.550, 0.085, 0.680, 0.530)
-	EASE_PRESET(OutQuad,       0.250, 0.460, 0.450, 0.940)
-	EASE_PRESET(InOutQuad,     0.455, 0.030, 0.515, 0.955)
-	EASE_PRESET(InCubic,       0.550, 0.055, 0.675, 0.190)
-	EASE_PRESET(OutCubic,      0.215, 0.610, 0.355, 1.000)
-	EASE_PRESET(InOutCubic,    0.645, 0.045, 0.355, 1.000)
-	EASE_PRESET(InQuart,       0.895, 0.030, 0.685, 0.220)
-	EASE_PRESET(OutQuart,      0.165, 0.840, 0.440, 1.000)
-	EASE_PRESET(InOutQuart,    0.770, 0.000, 0.175, 1.000)
-	EASE_PRESET(InQuint,       0.755, 0.050, 0.855, 0.060)
-	EASE_PRESET(OutQuint,      0.230, 1.000, 0.320, 1.000)
-	EASE_PRESET(InOutQuint,    0.860, 0.000, 0.070, 1.000)
-	EASE_PRESET(InSine,        0.470, 0.000, 0.745, 0.715)
-	EASE_PRESET(OutSine,       0.390, 0.575, 0.565, 1.000)
-	EASE_PRESET(InOutSine,     0.445, 0.050, 0.550, 0.950)
-	EASE_PRESET(InExpo,        0.950, 0.050, 0.795, 0.035)
-	EASE_PRESET(OutExpo,       0.190, 1.000, 0.220, 1.000)
-	EASE_PRESET(InOutExpo,     1.000, 0.000, 0.000, 1.000)
-	EASE_PRESET(InElastic,     0.600,-0.280, 0.735, 0.045)
-	EASE_PRESET(OutElastic,    0.175, 0.885, 0.320, 1.275)
-	EASE_PRESET(InOutElastic,  0.680,-0.550, 0.265, 1.550)
-
-	#undef EASE_PRESET
+	// Animation presets
+	inline const Fn& Linear()       { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.000, 0.000, 1.000, 1.000); } return *f; }
+	inline const Fn& OutBounce()    { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.680, -0.550, 0.265, 1.550); } return *f; }
+	inline const Fn& InQuad()       { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.550, 0.085, 0.680, 0.530); } return *f; }
+	inline const Fn& OutQuad()      { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.250, 0.460, 0.450, 0.940); } return *f; }
+	inline const Fn& InOutQuad()    { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.455, 0.030, 0.515, 0.955); } return *f; }
+	inline const Fn& InCubic()      { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.550, 0.055, 0.675, 0.190); } return *f; }
+	inline const Fn& OutCubic()     { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.215, 0.610, 0.355, 1.000); } return *f; }
+	inline const Fn& InOutCubic()   { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.645, 0.045, 0.355, 1.000); } return *f; }
+	inline const Fn& InQuart()      { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.895, 0.030, 0.685, 0.220); } return *f; }
+	inline const Fn& OutQuart()     { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.165, 0.840, 0.440, 1.000); } return *f; }
+	inline const Fn& InOutQuart()   { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.770, 0.000, 0.175, 1.000); } return *f; }
+	inline const Fn& InQuint()      { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.755, 0.050, 0.855, 0.060); } return *f; }
+	inline const Fn& OutQuint()     { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.230, 1.000, 0.320, 1.000); } return *f; }
+	inline const Fn& InOutQuint()   { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.860, 0.000, 0.070, 1.000); } return *f; }
+	inline const Fn& InSine()       { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.470, 0.000, 0.745, 0.715); } return *f; }
+	inline const Fn& OutSine()      { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.390, 0.575, 0.565, 1.000); } return *f; }
+	inline const Fn& InOutSine()    { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.445, 0.050, 0.550, 0.950); } return *f; }
+	inline const Fn& InExpo()       { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.950, 0.050, 0.795, 0.035); } return *f; }
+	inline const Fn& OutExpo()      { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.190, 1.000, 0.220, 1.000); } return *f; }
+	inline const Fn& InOutExpo()    { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(1.000, 0.000, 0.000, 1.000); } return *f; }
+	inline const Fn& InElastic()    { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.600, -0.280, 0.735, 0.045); } return *f; }
+	inline const Fn& OutElastic()   { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.175, 0.885, 0.320, 1.275); } return *f; }
+	inline const Fn& InOutElastic() { static Upp::One<Fn> f; ONCELOCK { f.Create() = Bezier(0.680, -0.550, 0.265, 1.550); } return *f; }
 
 } // namespace Easing
 
