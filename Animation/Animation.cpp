@@ -22,7 +22,7 @@ namespace {
 
 struct Scheduler {
     // Singleton accessor
-    static Scheduler& Inst() { static Scheduler* s = new Scheduler; return *s; }
+     static Scheduler& Inst() { return Single<Scheduler>(); }
 
     // State
     Vector<Animation::State*> active;  // Owns State* pointers
