@@ -9,7 +9,7 @@ using namespace Upp;
 
 GUI_APP_MAIN
 {
-    Animation::Finalize();            // ensure the scheduler is clean & idle
+
     Animation::SetFPS(30);            // optional: make pacing explicit
     GUIAnim::RunLab();                // interactive lab; close window to exit
 }

@@ -1,14 +1,15 @@
 description "Console probe tests for Animation\377";
 
 uses
-    Core,
-    CtrlLib,
-    Animation;
+	Core,
+	CtrlLib,
+	Animation;
 
 file
-    main.cpp,
-    ConsoleAnim.cpp,
-    ConsoleAnim.h;
+	main.cpp,
+	ConsoleAnim.cpp,
+	ConsoleAnim.h;
 
 mainconfig
-    "" = "";
+	"" = "";
+

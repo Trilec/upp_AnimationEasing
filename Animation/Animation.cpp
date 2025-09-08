@@ -1,12 +1,28 @@
 // CtrlLib/Animation.cpp
 //
-// Implementation of Animation scheduler and state machine.
-// See Animation.h header for high-level overview.
+// U++ Animation scheduler and state machine.
+// - Drives per-frame updates for UI animations (position, color, opacity, etc.)
+// - Designer-friendly easing via cubic-Bézier (CSS-style control points)
+// - Looping, yoyo, delays, pause/resume, and lifecycle callbacks
+// - Single-threaded: runs entirely on the UI thread via TimeCallback
 //
+// Invariants / behavior:
+// - Never deletes animation state while iterating the active list.
+//   (Removals are deferred to end-of-frame; Cancel/Stop is safe inside ticks.)
+// - Progress() returns [0..1]. After Stop(): 1.0. After forced KillFor(): 0.0.
+// - Easing callables are tiny lambdas; no global singletons or leaks.
+//
+// Changelog:
 // 2025-08-19 — initial test pass / cleaned comments / cache helper
 // 2025-08-21 — runtime Tick(n, max_ms_per_tick) manual driver (no #define)
 // 2025-08-27 — yoyo fix, naming clarity, optimized scheduler
 // 2025-08-27 — adjusted yoyo cycle count in Play, catch all exceptions
+// 2025-09-07 — constexpr Bézier presets; move FPS config into Scheduler
+//              defer removals to end-of-frame (fix access violation on Cancel/Stop),
+//              KillFor(): Progress=0.0 semantics, no globals
+// 2025-09-11 — headless deterministic console probe; owned re-entrant spawns;
+//               explicit shutdown order (ClearPool → Animation::Finalize());
+//               eliminated exit-time AV/leak; added L23–L26 tests & docs.
 
 #include "Animation.h"
 
@@ -14,43 +30,103 @@ using namespace Upp;
 
 /*==================== Configuration ====================*/
 // Target frame pacing (test or app can override via SetFPS)
-static int g_step_ms = 1000 / 60; // Milliseconds per frame
-static int g_fps = 60;           // Target frames per second
+
 
 /*==================== Scheduler ====================*/
 namespace {
 
 struct Scheduler {
-    // Singleton accessor
-     static Scheduler& Inst() { return Single<Scheduler>(); }
-
+    // // Singleton accessor (U++-style; safe for shutdown + memdiag)
+    static Scheduler& Inst() { return Single<Scheduler>(); }
+    
+    //previous attempt
+   //  static Scheduler& Inst() {
+   //     static Scheduler* s = new Scheduler; // intentionally never destroyed from - Tear down Late destruction
+   //     return *s;
+   // }
+    
     // State
     Vector<Animation::State*> active;  // Owns State* pointers
     TimeCallback ticker;              // Timer for frame updates
     bool running = false;             // Scheduler active state
     int timer_id = 0;                // Timer identifier for validation
     int64 manual_last_now = 0;       // Monotonic time for manual ticking
+    bool sweeping = false;   // true while RunFrame() is iterating 'active'
+
+    // moved previous “globals” here
+    int fps     = 60;
+    int step_ms = 1000 / 60;
+
+    // Change FPS safely while running
+    void SetFPSInternal(int f) {
+        fps     = clamp(f, 1, 240);
+        step_ms = max(1, 1000 / fps);
+        if (running) {
+            Stop();   // kills timer, bumps timer_id
+            Start();  // re-arms with new step_ms
+        }
+    }
+    int  GetFPSInternal() const { return fps; }
+
+// Stop the timer if there is nothing to advance (all paused or dying)
+void MaybeStopIfAllPaused() {
+    for (Animation::State* s : active)
+        if (s && !s->paused && !s->dying)
+            return;             // at least one needs ticking
+    Stop();                      // safe: kills timer, bumps timer_id
+}
+
+// Ensure timer runs if there is something to advance
+void EnsureRunningIfAnyUnpaused() {
+    for (Animation::State* s : active)
+        if (s && !s->paused && !s->dying) {
+            Start();             // (re)arm timer
+            return;
+        }
+    // all paused: nothing to do
+}
+
 
     // Destroying a state if present
     void DeleteState(Animation::State* s) { if (s) delete s; }
 
     // Finalizing scheduler: stop and purge all animations
-	void Finalize() {
-	    running = false;
-	    ++timer_id;
-	    ticker.Kill();
-	    for (Animation::State* s : active) DeleteState(s);
-	    active.Clear();
-	    manual_last_now = 0;   // <— add this
-	}
+void Finalize() {
+    // stop any timer activity and invalidate queued ticks
+    running = false;
+    ++timer_id;
+    ticker.Kill();
+
+    // Phase 1: detach every Animation from its State so no one keeps a dangling live_
+    for (Animation::State* s : active) {
+        if (!s) continue;
+        if (s->anim) {
+            Animation* a = s->anim;
+            // Snapshot current forward progress (console semantics); if you prefer
+            // "hard abort" semantics here, pass 0.0 instead.
+            double snap = a->Progress();
+            a->_OnStateRemovedCancel(snap); // sets a->live_ = nullptr and caches progress
+            s->anim = nullptr;              // break back-pointer
+        }
+    }
+
+    // Phase 2: free all states and clear the list
+    for (Animation::State* s : active)
+        DeleteState(s);
+
+    active.Clear();
+    manual_last_now = 0;
+}
+
 
     // Starting timer loop
     void Start() {
         if (running) return;
         running = true;
         int current_id = ++timer_id;
-        ticker.Set(g_step_ms, callback1(this, &Scheduler::TickTimer, current_id));
+        ticker.Set(step_ms, callback1(this, &Scheduler::TickTimer, current_id)); // ⬅ step_ms
     }
+
 
     // Stopping timer loop
     void Stop() {
@@ -67,76 +143,100 @@ struct Scheduler {
     }
 
     // Removing a state by pointer and stopping if idle
-    void Remove(Animation::State* st) {
-        for (int i = 0; i < active.GetCount(); ++i) {
-            if (active[i] == st) {
-                DeleteState(active[i]);
-                active.Remove(i);
-                break;
-            }
-        }
-        if (active.IsEmpty())
-            Stop();
-    }
+	void Remove(Animation::State* st)
+	{
+	    if (!st) return;
+	
+	    if (sweeping) {          // never mutate 'active' mid-iteration
+	        st->dying = true;
+	        return;
+	    }
+	
+	    for (int i = 0; i < active.GetCount(); ++i) {
+	        if (active[i] == st) {
+	            DeleteState(active[i]);
+	            active.Remove(i);
+	            break;
+	        }
+	    }
+	    if (active.IsEmpty())
+	        Stop();
+	}
+
 
     // Killing all animations for a given Ctrl or dead owners
-    void KillFor(Ctrl* c) {
-        for (int i = active.GetCount() - 1; i >= 0; --i) {
-            Animation::State* s = active[i];
-            if (!s->owner || s->owner == c) {
-                DeleteState(s);
-                active.Remove(i);
+void KillFor(Ctrl* c)
+{
+    for (int i = active.GetCount() - 1; i >= 0; --i) {
+        Animation::State* s = active[i];
+        if (!s || !s->owner || s->owner == c) {
+            if (s && s->anim) {
+                // Forced abort semantics: Progress() becomes 0.0
+                Animation* a = s->anim;
+                a->_OnStateRemovedCancel(0.0); // clears a->live_
+                s->anim = nullptr;
             }
+            if (s) s->dying = true;           // defer delete to next RunFrame
         }
-        if (active.IsEmpty())
-            Stop();
     }
+    // Let next tick sweep. (No immediate purge here—avoids re-entrancy.)
+}
+
+
+
 
     // Processing all active animations for the current frame
-    void RunFrame(int64 now) {
-        Vector<int> to_remove; // Collect indices for removal
+void RunFrame(int64 now)
+{
+    sweeping = true;                 // begin sweep-safe region
+    Vector<int> to_remove;
 
-        // Iterating over active animations
-        for (int i = 0; i < active.GetCount(); ++i) {
-            Animation::State* s = active[i];
-            bool cont = false;
-            if (s) {
-                try {
-                    cont = s->Step(now);
-                } catch (...) {
-                    // Logging any exception (replace with your logging mechanism)
-                    Cerr() << "Exception in Animation::State::Step\n";
-                    cont = false;
-                }
-            }
+    for (int i = 0; i < active.GetCount(); ++i) {
+        Animation::State* s = active[i];
+        bool cont = true;
 
-            if (!cont) {
-                // Updating progress cache before removal
-                if (s && s->anim) {
-                    s->anim->_SetProgressCache(s->finished_flag ? 1.0 : s->last_progress);
-                    s->anim = nullptr; // Prevent use-after-free
-                }
-                to_remove.Add(i);
+        if (!s || s->dying) {
+            cont = false;
+        } else {
+            try {
+                cont = s->Step(now);
+            } catch (...) {
+                Cerr() << "Exception in Animation::State::Step\n";
+                cont = false;
             }
         }
 
-        // Removing completed animations in reverse order
-        for (int i = to_remove.GetCount() - 1; i >= 0; --i) {
-            DeleteState(active[to_remove[i]]);
-            active.Remove(to_remove[i]);
-        }
-
-        // Stopping scheduler if no animations remain
-        if (active.IsEmpty())
-            Stop();
+      if (!cont) {
+		    if (s && s->anim) {
+		        Animation* a = s->anim;
+		        if (!s->owner) a->_OnStateRemovedCancel(0.0); // owner died → abort
+		        else           a->_OnStateRemovedFinish();    // natural finish
+		        s->anim = nullptr;
+		    }
+		    to_remove.Add(i);
+		}
     }
+
+    sweeping = false;                // end sweep-safe region
+
+    // delete after iteration
+    for (int k = to_remove.GetCount() - 1; k >= 0; --k) {
+        DeleteState(active[to_remove[k]]);
+        active.Remove(to_remove[k]);
+    }
+
+    if (active.IsEmpty())
+        Stop();
+}
+
+
 
     // Handling timer-driven frame updates
     void TickTimer(int current_id) {
         if (current_id != timer_id || !running) return;
         RunFrame(msecs());
         if (!active.IsEmpty()) {
-            ticker.Set(g_step_ms, callback1(this, &Scheduler::TickTimer, current_id));
+            ticker.Set(step_ms, callback1(this, &Scheduler::TickTimer, current_id));
         }
     }
 
@@ -162,66 +262,52 @@ struct Scheduler {
 // Advance time, compute eased value, run callbacks, and manage loop/yoyo bookkeeping
 bool Animation::State::Step(int64 now)
 {
-    // Checking ownership and pause state
-    if (!owner) return false;  // Owner died -> stop
-    if (paused) return true;   // Keep scheduled but do not advance
+    if (!owner) return false;   // owner died
+    if (paused) return true;    // stay scheduled, do not advance
 
-    // Computing elapsed time since leg start
     const int64 local = now - start_ms + elapsed_ms;
     if (local < spec.delay_ms)
-        return true;  // Still in delay window
+        return true;            // still in delay window
 
-    // Calculating raw progress of current leg (0 to 1)
     const int dur = max(1, spec.duration_ms);
     double leg_progress = double(local - spec.delay_ms) / dur;
-
     leg_progress = clamp(leg_progress, 0.0, 1.0);
 
-    // Adjusting progress for yoyo direction (forward: 0->1, reverse: 1->0)
+    // Adjust for yoyo direction
     double t = reverse ? (1.0 - leg_progress) : leg_progress;
 
-    // Caching forward progress for cancellation
-    last_progress = leg_progress;
-
-    // Applying easing to adjusted progress
+    // Apply easing
     const double e = spec.easing ? spec.easing(t) : t;
 
-    // Running update and tick callbacks
+    // Callbacks
     if (spec.on_update) spec.on_update(e);
     if (spec.tick && !spec.tick(e))
-        return false; // User requested stop
+        return false;           // user requested stop (treated like finish/cancel by caller)
 
-    // Checking leg completion
+    // Leg finished?
     if (leg_progress >= 1.0) {
         if (spec.yoyo) {
-            // Flipping direction for yoyo
             reverse = !reverse;
-
-            // Counting cycle on return to forward
-            if (!reverse) {
+            if (!reverse) { // finished a forward+reverse cycle
                 if (spec.loop_count >= 0 && --cycles <= 0) {
                     if (spec.on_finish) spec.on_finish();
-                    finished_flag = true;
-                    return false;
+                    return false;       // natural finish
                 }
             }
-            // Restarting timing for next leg
-            start_ms = now;
+            start_ms = now;             // next leg
             elapsed_ms = 0;
         } else {
-            // Handling linear loop
             if (spec.loop_count >= 0 && --cycles <= 0) {
                 if (spec.on_finish) spec.on_finish();
-                finished_flag = true;
-                return false;
+                return false;           // natural finish
             }
-            // Restarting timing for next loop
-            start_ms = now;
+            start_ms = now;             // next loop
             elapsed_ms = 0;
         }
     }
     return true;
 }
+
 
 /*==================== Animation Implementation ====================*/
 // Initializing animation with owner Ctrl
@@ -236,9 +322,9 @@ Animation::Animation(Ctrl& owner)
 Animation::~Animation()
 {
     if (live_)
-        live_->anim = nullptr; // Prevent scheduler write-back
-    live_ = nullptr;
+        Cancel(false);   // silent cancel: snapshot progress, detach, sweep-safe remove
 }
+
 
 #define RET(e) do { e; return *this; } while (0)
 
@@ -289,6 +375,7 @@ void Animation::Pause()
     if (live_ && !live_->paused) {
         live_->elapsed_ms += msecs() - live_->start_ms;
         live_->paused = true;
+        Scheduler::Inst().MaybeStopIfAllPaused(); // <-- stop ticker if everyone paused
     }
 }
 
@@ -298,6 +385,7 @@ void Animation::Resume()
     if (live_ && live_->paused) {
         live_->start_ms = msecs();
         live_->paused = false;
+        Scheduler::Inst().EnsureRunningIfAnyUnpaused(); // <-- rearm ticker
     }
 }
 
@@ -305,27 +393,43 @@ void Animation::Resume()
 void Animation::Stop()
 {
     if (!live_) return;
-    if (live_->spec.tick) live_->spec.tick(live_->reverse ? 0.0 : 1.0);
+
+    // Deliver final callbacks
+    if (live_->spec.tick)     live_->spec.tick(live_->reverse ? 0.0 : 1.0);
     if (live_->spec.on_finish) live_->spec.on_finish();
-    _SetProgressCache(1.0);
-    Cancel(false); // Do not fire on_cancel
+
+    // Finish semantics: cache 1.0 and clear live_
+    Animation::State* st = live_;
+    _OnStateRemovedFinish();        // sets progress_cache_ = 1.0 and live_ = nullptr
+
+    // Detach the state and ask scheduler to remove it (sweep-safe)
+    if (st->anim) st->anim = nullptr;
+    Scheduler::Inst().Remove(st);
 }
+
 
 // Aborting animation with optional cancel callback
 void Animation::Cancel(bool fire_cancel)
 {
     if (!live_) return;
+
     if (fire_cancel && live_->spec.on_cancel)
         live_->spec.on_cancel();
 
-    // Preserving last computed progress
-    _SetProgressCache(live_->last_progress);
+    // Snapshot forward progress for Progress()
+    const double p = Progress();
 
-    // Preventing scheduler write-back
-    live_->anim = nullptr;
-    Scheduler::Inst().Remove(live_);
-    live_ = nullptr;
+    Animation::State* st = live_;
+    live_ = nullptr;                 // we are detaching from the State
+    if (st->anim) st->anim = nullptr; // break back-pointer from State
+
+    // Tell scheduler to drop it; if sweeping, this marks dying.
+    Scheduler::Inst().Remove(st);
+
+    // Finalize our cache locally (cancel path)
+    _OnStateRemovedCancel(p);
 }
+
 
 // Checking if animation is playing
 bool Animation::IsPlaying() const
@@ -360,16 +464,12 @@ void Animation::Tick(int n, int max_ms_per_tick)
 
 /*---------------- FPS Control ----------------*/
 // Setting target FPS and updating step time
-void Animation::SetFPS(int fps)
-{
-    g_fps = clamp(fps, 1, 240);
-    g_step_ms = max(1, 1000 / g_fps);
+void Animation::SetFPS(int fps) {
+    Scheduler::Inst().SetFPSInternal(fps);
 }
 
-// Getting current target FPS
-int Animation::GetFPS()
-{
-    return g_fps;
+int Animation::GetFPS() {
+    return Scheduler::Inst().GetFPSInternal();
 }
 
 /*---------------- Global Helpers ----------------*/
@@ -384,3 +484,14 @@ void Animation::Finalize()
 {
     Scheduler::Inst().Finalize();
 }
+
+void Animation::_OnStateRemovedFinish() {
+    progress_cache_ = 1.0;
+    live_ = nullptr;
+}
+
+void Animation::_OnStateRemovedCancel(double p) {
+    progress_cache_ = clamp(p, 0.0, 1.0);
+    live_ = nullptr;
+}
+
