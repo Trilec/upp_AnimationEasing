@@ -26,44 +26,70 @@
 #include <Core/Core.h>
 #include <CtrlCore/CtrlCore.h>
 
-/*---------------- Easing helpers (cubic-bezier) ----------------*/
+/*---------------- Easing helpers (constexpr cubic-bézier) ----------------*/
 namespace Easing {
-using Fn = Upp::Function<double(double)>;
-namespace detail {
-inline double BX(double x1,double x2,double t){ double u=1-t; return 3*u*u*t*x1 + 3*u*t*t*x2 + t*t*t; }
-inline double BY(double y1,double y2,double t){ double u=1-t; return 3*u*u*t*y1 + 3*u*t*t*y2 + t*t*t; }
-inline double Solve(double x1,double y1,double x2,double y2,double x){
-	if(x<=0) return 0; if(x>=1) return 1;
-	double lo=0, hi=1, t=x;
-	for(int i=0;i<8;++i){ double cx=BX(x1,x2,t); (cx<x?lo:hi)=t; t=0.5*(lo+hi); }
-	return BY(y1,y2,t);
-}}
-inline Fn Bezier(double x1,double y1,double x2,double y2){ return [=](double t){ return detail::Solve(x1,y1,x2,y2,t); }; }
 
-inline const Fn& Linear()        { static auto f = Upp::MakeOne<Fn>(Bezier(0.000, 0.000, 1.000, 1.000));  return *f; }
-inline const Fn& OutBounce()     { static auto f = Upp::MakeOne<Fn>(Bezier(0.680, -0.550, 0.265, 1.550)); return *f; }
-inline const Fn& InQuad()        { static auto f = Upp::MakeOne<Fn>(Bezier(0.550, 0.085, 0.680, 0.530));  return *f; }
-inline const Fn& OutQuad()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.250, 0.460, 0.450, 0.940));  return *f; }
-inline const Fn& InOutQuad()     { static auto f = Upp::MakeOne<Fn>(Bezier(0.455, 0.030, 0.515, 0.955));  return *f; }
-inline const Fn& InCubic()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.550, 0.055, 0.675, 0.190));  return *f; }
-inline const Fn& OutCubic()      { static auto f = Upp::MakeOne<Fn>(Bezier(0.215, 0.610, 0.355, 1.000));  return *f; }
-inline const Fn& InOutCubic()    { static auto f = Upp::MakeOne<Fn>(Bezier(0.645, 0.045, 0.355, 1.000));  return *f; }
-inline const Fn& InQuart()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.895, 0.030, 0.685, 0.220));  return *f; }
-inline const Fn& OutQuart()      { static auto f = Upp::MakeOne<Fn>(Bezier(0.165, 0.840, 0.440, 1.000));  return *f; }
-inline const Fn& InOutQuart()    { static auto f = Upp::MakeOne<Fn>(Bezier(0.770, 0.000, 0.175, 1.000));  return *f; }
-inline const Fn& InQuint()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.755, 0.050, 0.855, 0.060));  return *f; }
-inline const Fn& OutQuint()      { static auto f = Upp::MakeOne<Fn>(Bezier(0.230, 1.000, 0.320, 1.000));  return *f; }
-inline const Fn& InOutQuint()    { static auto f = Upp::MakeOne<Fn>(Bezier(0.860, 0.000, 0.070, 1.000));  return *f; }
-inline const Fn& InSine()        { static auto f = Upp::MakeOne<Fn>(Bezier(0.470, 0.000, 0.745, 0.715));  return *f; }
-inline const Fn& OutSine()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.390, 0.575, 0.565, 1.000));  return *f; }
-inline const Fn& InOutSine()     { static auto f = Upp::MakeOne<Fn>(Bezier(0.445, 0.050, 0.550, 0.950));  return *f; }
-inline const Fn& InExpo()        { static auto f = Upp::MakeOne<Fn>(Bezier(0.950, 0.050, 0.795, 0.035));  return *f; }
-inline const Fn& OutExpo()       { static auto f = Upp::MakeOne<Fn>(Bezier(0.190, 1.000, 0.220, 1.000));  return *f; }
-inline const Fn& InOutExpo()     { static auto f = Upp::MakeOne<Fn>(Bezier(1.000, 0.000, 0.000, 1.000));  return *f; }
-inline const Fn& InElastic()     { static auto f = Upp::MakeOne<Fn>(Bezier(0.600, -0.280, 0.735, 0.045)); return *f; }
-inline const Fn& OutElastic()    { static auto f = Upp::MakeOne<Fn>(Bezier(0.175, 0.885, 0.320, 1.275));  return *f; }
-inline const Fn& InOutElastic()  { static auto f = Upp::MakeOne<Fn>(Bezier(0.680, -0.550, 0.265, 1.550)); return *f; }
+using Fn = Upp::Function<double(double)>;
+
+namespace detail {
+// Unit-time cubic Bézier: P0=(0,0), P3=(1,1)
+constexpr double BX(double x1, double x2, double t) noexcept {
+    double u = 1.0 - t;
+    return 3.0*u*u*t*x1 + 3.0*u*t*t*x2 + t*t*t;
+}
+constexpr double BY(double y1, double y2, double t) noexcept {
+    double u = 1.0 - t;
+    return 3.0*u*u*t*y1 + 3.0*u*t*t*y2 + t*t*t;
+}
+constexpr double Solve(double x1, double y1, double x2, double y2, double x) noexcept {
+    if (x <= 0.0) return 0.0;
+    if (x >= 1.0) return 1.0;
+    double lo = 0.0, hi = 1.0, t = x;
+    // 8 steps is plenty for UI precision
+    for (int i = 0; i < 8; ++i) {
+        double cx = BX(x1, x2, t);
+        (cx < x ? lo : hi) = t;
+        t = 0.5 * (lo + hi);
+    }
+    return BY(y1, y2, t);
+}
+} // namespace detail
+
+// Factory: returns a tiny callable to evaluate the curve
+constexpr auto Bezier(double x1, double y1, double x2, double y2) {
+    return [x1, y1, x2, y2](double t) noexcept -> double {
+        return detail::Solve(x1, y1, x2, y2, t);
+    };
+}
+
+// Presets (match CSS-ish names/feel). Usage: .Ease(Easing::OutCubic())
+inline constexpr auto Linear()        { return Bezier(0.000, 0.000, 1.000, 1.000); }
+inline constexpr auto InQuad()        { return Bezier(0.550, 0.085, 0.680, 0.530); }
+inline constexpr auto OutQuad()       { return Bezier(0.250, 0.460, 0.450, 0.940); }
+inline constexpr auto InOutQuad()     { return Bezier(0.455, 0.030, 0.515, 0.955); }
+inline constexpr auto InCubic()       { return Bezier(0.550, 0.055, 0.675, 0.190); }
+inline constexpr auto OutCubic()      { return Bezier(0.215, 0.610, 0.355, 1.000); }
+inline constexpr auto InOutCubic()    { return Bezier(0.645, 0.045, 0.355, 1.000); }
+inline constexpr auto InQuart()       { return Bezier(0.895, 0.030, 0.685, 0.220); }
+inline constexpr auto OutQuart()      { return Bezier(0.165, 0.840, 0.440, 1.000); }
+inline constexpr auto InOutQuart()    { return Bezier(0.770, 0.000, 0.175, 1.000); }
+inline constexpr auto InQuint()       { return Bezier(0.755, 0.050, 0.855, 0.060); }
+inline constexpr auto OutQuint()      { return Bezier(0.230, 1.000, 0.320, 1.000); }
+inline constexpr auto InOutQuint()    { return Bezier(0.860, 0.000, 0.070, 1.000); }
+inline constexpr auto InSine()        { return Bezier(0.470, 0.000, 0.745, 0.715); }
+inline constexpr auto OutSine()       { return Bezier(0.390, 0.575, 0.565, 1.000); }
+inline constexpr auto InOutSine()     { return Bezier(0.445, 0.050, 0.550, 0.950); }
+inline constexpr auto InExpo()        { return Bezier(0.950, 0.050, 0.795, 0.035); }
+inline constexpr auto OutExpo()       { return Bezier(0.190, 1.000, 0.220, 1.000); }
+inline constexpr auto InOutExpo()     { return Bezier(1.000, 0.000, 0.000, 1.000); }
+inline constexpr auto InElastic()     { return Bezier(0.600, -0.280, 0.735, 0.045); }
+inline constexpr auto OutElastic()    { return Bezier(0.175, 0.885, 0.320, 1.275); }
+inline constexpr auto InOutElastic()  { return Bezier(0.680, -0.550, 0.265, 1.550); }
+// “Bounce” styled as a single cubic segment (intentional overshoot)
+inline constexpr auto OutBounce()     { return Bezier(0.680, -0.550, 0.265, 1.550); }
+
 } // namespace Easing
+
 
 
 namespace Upp {
@@ -85,20 +111,19 @@ public:
 
 	/*---------------- State is scheduled runtime instance ----------------*/
 	struct State : Pte<State> {
-		Ptr<Ctrl> owner;         // safe watcher to owning Ctrl
-		Spec  spec;              // copy of staged Spec
-		int64 start_ms = 0;      // wallclock when current leg started
-		int64 elapsed_ms = 0;    // accumulated time when paused
-		bool  paused  = false;   // pause gate
-		bool  reverse = false;   // direction (true == reverse leg)
-		int   cycles  = 1;       // remaining cycles (when loop_count >= 0)
-
-		Animation* anim = nullptr;   // back-pointer (non-owning)
-		bool       finished_flag = false; // natural finish marker
-		double     last_progress = 0.0;   // raw forward progress cache [0..1]
-
-		// Advance to 'now'. Returns true to keep scheduling, false to stop.
-		bool Step(int64 now);
+	    Ptr<Ctrl> owner;         // safe watcher to owning Ctrl
+	    Spec  spec;              // staged spec snapshot
+	    int64 start_ms   = 0;    // when current leg started
+	    int64 elapsed_ms = 0;    // accumulated time when paused
+	    bool  paused     = false;
+	    bool  reverse    = false;
+	    int   cycles     = 1;    // remaining cycles (if loop_count >= 0)
+	
+	    Animation* anim  = nullptr; // back-pointer (non-owning)
+	    bool  dying      = false;   // <- mark for deferred removal
+	
+	    // Advance to 'now'. Returns true to keep scheduling, false to stop.
+	    bool Step(int64 now);
 	};
 
 	/*---------------- Lifecycle ----------------*/
@@ -128,6 +153,8 @@ public:
 	Animation& operator()(const Function<bool(double)>& f); // set tick
 	Animation& operator()(Function<bool(double)>&& f);      // set tick (move)
 
+
+
 	/*---------------- Control ----------------*/
 	void Play();                       // commit staged spec and schedule
 	void Pause();                      // pause time accumulation
@@ -152,6 +179,12 @@ public:
 	static inline void TickOnce() { Tick(1, 0); }
 
 	void _SetProgressCache(double v) { progress_cache_ = v; }
+	
+	//  called by the scheduler when a State is removed.
+    // - Finish path: Progress() becomes 1.0
+    // - Cancel/kill path: Progress() becomes provided forward-progress snapshot
+	void _OnStateRemovedFinish();
+	void _OnStateRemovedCancel(double forward_progress_snapshot);
 private:
 	// Owner and staging
 	Ctrl*      owner_ = nullptr;   // non-owning
@@ -206,4 +239,4 @@ inline Animation AnimateRect (Ctrl& c, Callback1<const Rect&>  cb, Rect  f, Rect
 
 } // namespace Upp
 
-#endif // _GUIAnim_GUIAnim_h_
+#endif // _Animation_Animation_h_

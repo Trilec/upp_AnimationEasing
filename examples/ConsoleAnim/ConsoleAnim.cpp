@@ -1,100 +1,156 @@
-// ConsoleAnim.cpp — console probe harness for CtrlLib/Animation
-// Uses manual ticking so results are deterministic across platforms.
+/*------------------------------------------------------------------------------
+    ConsoleAnim.cpp — headless, deterministic probe for CtrlLib/Animation
 
+    WHAT THIS IS
+    ------------
+    A self-contained console test suite for the Animation library that:
+      • Never opens any window (no GUI subsystem needed).
+      • Drives frames with Animation::TickOnce() for deterministic timing.
+      • Uses a plain Ctrl only as an *owner* (never opened).
+      • Prints clear PASS/FAIL lines per test and a summary.
 
+    WHY THIS APPROACH
+    -----------------
+    - Reproducible across platforms/runners: no message pumps or timer jitter.
+    - CI-friendly: works under CONSOLE_APP_MAIN without GUI init.
+    - Catches real-world issues: ownership, cancel/stop while stepping,
+      yoyo/loops, delays, progress bounds, re-entrancy, finalization.
+
+    IMPORTANT
+    ---------
+    - No EXITBLOCKs here. We finalize explicitly via Animation::Finalize().
+------------------------------------------------------------------------------*/
 #include <Core/Core.h>
-#include <CtrlLib/CtrlLib.h>
 
 using namespace Upp;
 
-#include <Animation/Animation.h> 
+#include <Animation/Animation.h>
 #include "ConsoleAnim.h"
 
-// ---------- helpers ----------
+// ---------- deterministic time driver (no GUI pump) ----------
 static void PumpForMs(int ms) {
     int64 until = msecs() + ms;
     while (msecs() < until) {
-        Animation::TickOnce();   // guaranteed tick
+        Animation::TickOnce();   // advance scheduler deterministically
         Sleep(1);
     }
 }
 
+// ---------- shared fixtures ----------
 struct Probe {
-    TopWindow w;
-    Probe()  { w.Title("Probe").SetRect(0,0,400,300); }
-    ~Probe() = default;
+    Ctrl owner;
+    Vector<One<Animation>> pool;
+
+    Probe() { owner.SetRect(0,0,400,300); }
+
+    Animation* Spawn() {
+        One<Animation>& slot = pool.Add();
+        slot.Create(owner);        // construct Animation(owner)
+        return ~slot;              // Animation*
+    }
+
+    void ClearPool() { pool.Clear(); } // destroys owned Animations
 };
 
-struct BoolFlag {
-    bool* p;
-    void Set() { if (p) *p = true; }
-};
+struct BoolFlag { bool* p; void Set() { if (p) *p = true; } };
 
 struct ReentrantStarter {
-    TopWindow* w = nullptr;
-    int* ticks2 = nullptr;
+    Probe* probe = nullptr;
+    int*   ticks2 = nullptr;
     void StartNext() {
-        Animation* spawned = new Animation(*w);
+        Animation* spawned = probe->Spawn();     // owned by Probe::pool
         spawned->operator()([&](double){ ++(*ticks2); return true; })
                .Duration(80).Play();
-        // intentionally leaked for probe simplicity
     }
 };
 
-// ---------- tests L1–L22 (same logic you’ve been running) ----------
-static bool L1_make_window(Probe& p) { Cout() << "L1: Made TopWindow\n"; return p.w.IsOpen() || true; }
-static bool L2_pump_events(Probe&)   { PumpForMs(10); Cout() << "L2: Pumped events\n"; return true; }
-static bool L3_construct_only(Probe& p){ { Animation a(p.w); } Cout() << "L3: Construct+scope-exit ok\n"; return true; }
+
+// L1 — Ctrl existence (owner can be constructed)
+static bool L1_make_owner(Probe& p) {
+    Cout() << "L1: Made owner Ctrl\n";
+    return p.owner.IsOpen() || true;   // just prove we can construct it
+}
+
+// L2 — Basic time pump works
+static bool L2_pump_events(Probe&) {
+    PumpForMs(10);
+    Cout() << "L2: BAsic Pumped events\n";
+    return true;
+}
+
+// L3 — Construct & scope-exit with no Play()
+static bool L3_construct_only(Probe& p){
+    { Animation a(p.owner); }
+    Cout() << "L3: Construct+scope-exit ok\n";
+    return true;
+}
+
+// L4 — Play then Cancel stops cleanly
 static bool L4_play_cancel(Probe& p) {
-    Animation a(p.w);
+    Animation a(p.owner);
     a([](double){ return true; }).Duration(50).Play();
     PumpForMs(5); a.Cancel();
     Cout() << "L4: Play+Cancel done\n"; return true;
 }
+
+// L5 — Tick callback is invoked at least once
 static bool L5_ticks_count(Probe& p) {
     int ticks = 0;
-    Animation a(p.w);
+    Animation a(p.owner);
     a([&](double){ ++ticks; return true; }).Duration(80).Play();
     PumpForMs(150);
     Cout() << Format("L5: ticks=%d\n", ticks);
     return ticks > 0;
 }
+
+// L6 — Natural finish without intervention
 static bool L6_natural_finish(Probe& p) {
-    Animation a(p.w); a([](double){ return true; }).Duration(60).Play();
+    Animation a(p.owner); a([](double){ return true; }).Duration(60).Play();
     PumpForMs(200); Cout() << "L6: natural finish\n"; return true;
 }
+
+// L7 — Double Cancel is harmless
 static bool L7_double_cancel(Probe& p) {
-    Animation a(p.w); a([](double){ return true; }).Duration(60).Play();
+    Animation a(p.owner); a([](double){ return true; }).Duration(60).Play();
     PumpForMs(5); a.Cancel(); a.Cancel();
     Cout() << "L7: double cancel ok\n"; return true;
 }
+
+// L8 — KillAllFor(owner) aborts owner’s animations
 static bool L8_kill_all_for(Probe& p) {
-    Animation a(p.w); a([](double){ return true; }).Duration(200).Play();
-    PumpForMs(20); Animation::KillAllFor(p.w);
+    Animation a(p.owner); a([](double){ return true; }).Duration(200).Play();
+    PumpForMs(20); Animation::KillAllFor(p.owner);
     Cout() << "L8: KillAllFor issued\n"; return true;
 }
+
+// L9 — Two animations can run concurrently
 static bool L9_two_anims(Probe& p) {
     int a1=0, a2=0;
-    Animation x(p.w), y(p.w);
+    Animation x(p.owner), y(p.owner);
     x([&](double){ ++a1; return true; }).Duration(120).Play();
     y([&](double){ ++a2; return true; }).Duration(120).Play();
     PumpForMs(160);
     Cout() << Format("L9: ticks a1=%d a2=%d\n", a1, a2);
     return a1 > 0 && a2 > 0;
 }
+
+// L10 — Owner destruction stops its animations safely
 static bool L10_owner_destroyed() {
     int ticks = 0;
-    { TopWindow w2; w2.SetRect(0,0,10,10);
-      Animation a(w2);
-      a([&](double){ ++ticks; return true; }).Duration(300).Play();
-      PumpForMs(50); /* w2 dtor here */ }
+    {   Ctrl c2;
+        Animation a(c2);
+        a([&](double){ ++ticks; return true; }).Duration(300).Play();
+        PumpForMs(50); /* c2 dtor here */
+    }
     PumpForMs(50);
     Cout() << Format("L10: owner gone, ticks(before close)=%d\n", ticks);
     return true;
 }
+
+// L11 — Stress burst: many short animations complete
 static bool L11_stress(Probe& p) {
     for (int i=0; i<200; ++i) {
-        Animation a(p.w);
+        Animation a(p.owner);
         a([](double){ return true; }).Duration(15).Play();
         if((i % 40) == 0) Cout() << Format("L11: burst at i=%d\n", i);
     }
@@ -102,24 +158,28 @@ static bool L11_stress(Probe& p) {
     Cout() << "L11: stress done\n";
     return true;
 }
+
+// L12 — Pause freezes time; Resume continues
 static bool L12_pause_resume(Probe& p) {
     int ticks = 0;
-    Animation a(p.w);
+    Animation a(p.owner);
     a([&](double){ ++ticks; return true; }).Duration(240).Play();
     PumpForMs(30);
     a.Pause();
     int at_pause = ticks;
     PumpForMs(50);
-    bool ok = (ticks == at_pause);
+    bool frozen = (ticks == at_pause);
     a.Resume();
     PumpForMs(250);
     Cout() << "L12: pause/resume done\n";
-    return ok;
+    return frozen;
 }
+
+// L13 — Stop() triggers finish only (not cancel)
 static bool L13_stop_calls_finish_only(Probe& p) {
     bool finish=false, cancel=false;
     BoolFlag onfin{&finish}, oncan{&cancel};
-    Animation a(p.w);
+    Animation a(p.owner);
     a([](double){ return true; })
       .OnFinish(callback(&onfin, &BoolFlag::Set))
       .OnCancel(callback(&oncan, &BoolFlag::Set))
@@ -127,10 +187,12 @@ static bool L13_stop_calls_finish_only(Probe& p) {
     PumpForMs(20); a.Stop(); PumpForMs(10);
     Cout() << "L13: stop->finish only\n"; return finish && !cancel;
 }
+
+// L14 — Cancel() triggers cancel only (not finish)
 static bool L14_cancel_calls_cancel_only(Probe& p) {
     bool finish=false, cancel=false;
     BoolFlag onfin{&finish}, oncan{&cancel};
-    Animation a(p.w);
+    Animation a(p.owner);
     a([](double){ return true; })
       .OnFinish(callback(&onfin, &BoolFlag::Set))
       .OnCancel(callback(&oncan, &BoolFlag::Set))
@@ -138,10 +200,12 @@ static bool L14_cancel_calls_cancel_only(Probe& p) {
     PumpForMs(20); a.Cancel(); PumpForMs(10);
     Cout() << "L14: cancel->cancel only\n"; return cancel && !finish;
 }
+
+// L15 — Start Delay is respected (no ticks before delay)
 static bool L15_delay_respected(Probe& p) {
     int ticks=0;
     int64 start = msecs();
-    Animation a(p.w);
+    Animation a(p.owner);
     a([&](double){ ++ticks; return true; })
       .Delay(120).Duration(60).Play();
     PumpForMs(80);
@@ -151,9 +215,11 @@ static bool L15_delay_respected(Probe& p) {
     Cout() << "L15: delay respected\n";
     return pre_ok && post_ok;
 }
+
+// L16 — Loop + Yoyo reverses direction mid-cycle
 static bool L16_loop_yoyo_cycles(Probe& p) {
     Vector<double> seen;
-    Animation a(p.w);
+    Animation a(p.owner);
     a([&](double t){ seen.Add(t); return true; })
       .Yoyo(true).Loop(2).Duration(80).Play();
     PumpForMs(220);
@@ -165,10 +231,12 @@ static bool L16_loop_yoyo_cycles(Probe& p) {
     Cout() << "L16: loop+yoyo\n";
     return up && down;
 }
+
+// L17 — An easing preset (OutQuad) still reaches finish
 static bool L17_easing_outquad_completes(Probe& p) {
     bool finished=false;
     BoolFlag onfin{&finished};
-    Animation a(p.w);
+    Animation a(p.owner);
     a([](double){ return true; })
       .Ease(Easing::OutQuad())
       .OnFinish(callback(&onfin, &BoolFlag::Set))
@@ -177,6 +245,8 @@ static bool L17_easing_outquad_completes(Probe& p) {
     Cout() << "L17: easing completes\n";
     return finished;
 }
+
+// L18 — SetFPS clamps to [1..240]
 static bool L18_fps_setter_clamps() {
     int orig = Animation::GetFPS();
     Animation::SetFPS(0);     int f1 = Animation::GetFPS();
@@ -186,8 +256,10 @@ static bool L18_fps_setter_clamps() {
     Cout() << "L18: FPS clamp\n";
     return ok;
 }
+
+// L19 — Progress ∈ [0..1] and ends ~1.0
 static bool L19_progress_bounds(Probe& p) {
-    Animation a(p.w);
+    Animation a(p.owner);
     a([](double){ return true; }).Duration(120).Play();
     bool in_bounds = true;
     for (int i=0;i<10;++i) {
@@ -200,10 +272,12 @@ static bool L19_progress_bounds(Probe& p) {
     Cout() << Format("L19: progress final=%.3f\n", finalp);
     return in_bounds && finalp >= 0.99;
 }
+
+// L20 — Re-entrant OnFinish can start another animation
 static bool L20_reentrant_onfinish_starts_new(Probe& p) {
     int ticks2 = 0;
-    ReentrantStarter r{ &p.w, &ticks2 };
-    {   Animation a1(p.w);
+    ReentrantStarter r{ &p, &ticks2 };
+    {   Animation a1(p.owner);
         a1([](double){ return true; })
           .Duration(60)
           .OnFinish(callback(&r, &ReentrantStarter::StartNext))
@@ -214,8 +288,10 @@ static bool L20_reentrant_onfinish_starts_new(Probe& p) {
     Cout() << "L20: reentrant finish\n";
     return ok;
 }
+
+// L21 — Exceptions thrown in tick do not crash app
 static bool L21_exception_in_tick_is_caught(Probe& p) {
-    Animation a(p.w);
+    Animation a(p.owner);
     bool survived = true;
     int hits = 0;
     a([&](double){
@@ -227,9 +303,11 @@ static bool L21_exception_in_tick_is_caught(Probe& p) {
     Cout() << "L21: exception caught (no crash)\n";
     return survived;
 }
+
+// L22 — Finalize while running halts scheduling cleanly
 static bool L22_finalize_while_running(Probe& p) {
     int ticks = 0;
-    Animation a(p.w);
+    Animation a(p.owner);
     a([&](double){ ++ticks; return true; }).Duration(500).Play();
     PumpForMs(20);
     Animation::Finalize();
@@ -240,19 +318,73 @@ static bool L22_finalize_while_running(Probe& p) {
     return halted;
 }
 
-// ---------- pretty test runner with descriptions ----------
+// ----------------------------- EXTRA EDGE CASES -----------------------------
+
+// L23 — Pause during Delay holds time (no ticks until resume)
+static bool L23_pause_inside_delay(Probe& p) {
+    int ticks=0;
+    Animation a(p.owner);
+    a([&](double){ ++ticks; return true; })
+      .Delay(200).Duration(60).Play();
+
+    PumpForMs(50);
+    a.Pause();
+    int before = ticks;
+    PumpForMs(250);                // would exceed delay, but paused
+    bool no_ticks_while_paused = (ticks == before);
+
+    a.Resume();
+    PumpForMs(260);                // now cross delay boundary
+    return no_ticks_while_paused && ticks > 0;
+}
+
+// L24 — Cancel called inside tick fires cancel only
+static bool L24_cancel_inside_tick(Probe& p) {
+    bool cancel=false, finish=false;
+    BoolFlag oncan{&cancel}, onfin{&finish};
+    Animation a(p.owner);
+    a([&](double){ a.Cancel(); return true; })
+      .OnCancel(callback(&oncan, &BoolFlag::Set))
+      .OnFinish(callback(&onfin, &BoolFlag::Set))
+      .Duration(200).Play();
+    PumpForMs(50);
+    return cancel && !finish;
+}
+
+// L25 — Changing FPS mid-run keeps animation healthy and finishes
+static bool L25_setfps_midrun(Probe& p) {
+    int ticks=0; bool finished=false; BoolFlag onfin{&finished};
+    Animation a(p.owner);
+    a([&](double){ ++ticks; return true; })
+      .OnFinish(callback(&onfin, &BoolFlag::Set))
+      .Duration(300).Play();
+
+    PumpForMs(60);
+    Animation::SetFPS(15);    // slow down
+    PumpForMs(120);
+    Animation::SetFPS(240);   // speed up
+    PumpForMs(300);
+
+    return ticks > 0 && finished;
+}
+
+// L26 — After KillAllFor, Progress() reports forced 0.0
+static bool L26_progress_after_killallfor(Probe& p) {
+    Animation a(p.owner);
+    a([](double){ return true; }).Duration(500).Play();
+    PumpForMs(10);
+    Animation::KillAllFor(p.owner);
+    PumpForMs(10);
+    double prog = a.Progress();
+    return prog <= 1e-6;
+}
+
+// ---------- minimal runner ----------
 namespace {
-
-struct TestSummary {
-    int total  = 0;
-    int passed = 0;
-    int failed = 0;
-};
-
+struct TestSummary { int total=0, passed=0, failed=0; };
 
 static void PrintLineResult(int id, const String& desc, bool ok)
 {
-    // left-pad id to 2 digits; align description to 55 columns
     String status = ok ? "PASS" : "FAIL";
     Cout() << Format("Test %02d: %-55.55s [ %s ]\n", id, desc, status);
 }
@@ -260,11 +392,10 @@ static void PrintLineResult(int id, const String& desc, bool ok)
 struct TestCase {
     int         id;
     const char* desc;
-    bool        needs_probe;         // true -> call with Probe&, false -> standalone
+    bool        needs_probe;
     bool      (*fn_with)(Probe&);
     bool      (*fn_standalone)();
 };
-
 } // anon
 
 // ---------- entry ----------
@@ -272,12 +403,8 @@ namespace ConsoleAnim {
 
 bool RunProbe()
 {
-
-
-    Probe p; // single TopWindow reused by with-probe tests
-
-    const TestCase tests[] = {
-        {  1, "TopWindow can be created",                               true,  L1_make_window,                     nullptr },
+    static const TestCase tests[] = {
+        {  1, "Owner Ctrl can be created",                              true,  L1_make_owner,                      nullptr },
         {  2, "Manual pump advances scheduler",                         true,  L2_pump_events,                     nullptr },
         {  3, "Animation construct & scope exit are safe",              true,  L3_construct_only,                  nullptr },
         {  4, "Play then Cancel stops cleanly",                         true,  L4_play_cancel,                     nullptr },
@@ -299,21 +426,33 @@ bool RunProbe()
         { 20, "OnFinish may safely start another animation",            true,  L20_reentrant_onfinish_starts_new,  nullptr },
         { 21, "Exception in tick is caught (no crash)",                 true,  L21_exception_in_tick_is_caught,    nullptr },
         { 22, "Finalize halts running animations",                      true,  L22_finalize_while_running,         nullptr },
+        // Extra coverage:
+        { 23, "Pause during Delay holds time (no ticks until resume)",   true,  L23_pause_inside_delay,             nullptr },
+        { 24, "Cancel called inside tick fires cancel only",            true,  L24_cancel_inside_tick,             nullptr },
+        { 25, "Changing FPS mid-run keeps animation healthy",           true,  L25_setfps_midrun,                  nullptr },
+        { 26, "After KillAllFor, Progress() reports forced 0.0",        true,  L26_progress_after_killallfor,      nullptr },
     };
 
     Cout() << "Headless Test Suite for Animation Library\n";
     Cout() << "-----------------------------------------\n";
 
     TestSummary sum;
-    for(const TestCase& t : tests) {
-        bool ok = t.needs_probe ? t.fn_with(p) : t.fn_standalone();
+    Probe p;
+
+    for (const TestCase& t : tests) {
+        bool ok = false;
+        try {
+            ok = t.needs_probe ? t.fn_with(p) : t.fn_standalone();
+        } catch(...) {
+            ok = false;
+        }
         PrintLineResult(t.id, t.desc, ok);
-        ++sum.total;
-        if(ok) ++sum.passed; else ++sum.failed;
+        ++sum.total; if (ok) ++sum.passed; else ++sum.failed;
     }
 
-    // Idempotent cleanup
-    Animation::Finalize();
+    // Explicit, idempotent cleanup:
+	p.ClearPool();          // destroy pooled Animations first
+	Animation::Finalize();  // then stop scheduler / free States
 
     Cout() << '\n'
            << "Summary: " << sum.total << " tests, "

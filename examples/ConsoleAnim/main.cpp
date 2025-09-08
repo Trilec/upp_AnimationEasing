@@ -1,6 +1,6 @@
 // main.cpp — runs console probe first, then opens the GUI animation lab.
 
-#include <CtrlLib/CtrlLib.h>
+
 #include <Animation/Animation.h>
 
 using namespace Upp;
@@ -9,5 +9,6 @@ using namespace Upp;
 
 CONSOLE_APP_MAIN
 {
-    ConsoleAnim::RunProbe();          // prints PASS/FAIL summary
-}
+    bool ok = ConsoleAnim::RunProbe();
+    SetExitCode(ok ? 0 : 1);
+} 
