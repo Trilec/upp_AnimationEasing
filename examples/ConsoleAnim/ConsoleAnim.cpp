@@ -379,6 +379,42 @@ static bool L26_progress_after_killallfor(Probe& p) {
     return prog <= 1e-6;
 }
 
+// L27 — Reuse after Cancel: setters safe + re-Play works (no crash, ticks > 0)
+static bool L27_reuse_after_cancel(Probe& p) {
+    Animation a(p.owner);
+    int ticks = 0;
+    a([](double){ return true; }).Duration(80).Play();
+    PumpForMs(10);
+
+    a.Cancel();                               // abort current run
+    // Now reconfigure on the same object — this used to crash if spec_ was null
+    a.Duration(60).Ease(Easing::OutQuad())    // setters must re-prime spec
+     ( [&](double){ ++ticks; return true; } )
+     .Play();
+
+    PumpForMs(30);
+    bool ok = ticks > 0;
+    Cout() << "L27: ticks=" << ticks << '\n';
+    return ok;
+}
+
+// L28 — Cancel while paused, then reconfigure + Play (no crash, resumes clean)
+static bool L28_cancel_while_paused_then_reuse(Probe& p) {
+    Animation a(p.owner);
+    int ticks = 0;
+    a([&](double){ ++ticks; return true; }).Duration(120).Play();
+    PumpForMs(10);
+    a.Pause();
+    a.Cancel();                               // cancel in paused state
+
+    // Reuse same instance: should be safe and start from 0
+    ticks = 0;
+    a.Duration(50)([&](double){ ++ticks; return true; }).Play();
+    PumpForMs(20);
+    Cout() << "L28: ticks=" << ticks << '\n';
+    return ticks > 0;
+}
+
 // ---------- minimal runner ----------
 namespace {
 struct TestSummary { int total=0, passed=0, failed=0; };
@@ -431,6 +467,9 @@ bool RunProbe()
         { 24, "Cancel called inside tick fires cancel only",            true,  L24_cancel_inside_tick,             nullptr },
         { 25, "Changing FPS mid-run keeps animation healthy",           true,  L25_setfps_midrun,                  nullptr },
         { 26, "After KillAllFor, Progress() reports forced 0.0",        true,  L26_progress_after_killallfor,      nullptr },
+        { 27, "Reuse after Cancel: setters safe, Play again works",      true,  L27_reuse_after_cancel,            nullptr },
+        { 28, "Cancel while paused, then reuse safely",                  true,  L28_cancel_while_paused_then_reuse,nullptr },
+
     };
 
     Cout() << "Headless Test Suite for Animation Library\n";
