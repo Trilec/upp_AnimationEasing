@@ -112,8 +112,11 @@ public:
         Function<bool(double)> tick;
 
         // Lifecycle hooks. on_update(e) fires every frame with the eased value.
-        Callback on_start, on_finish, on_cancel;
-        Callback1<double> on_update;
+        //Callback on_start, on_finish, on_cancel;
+        //Callback1<double> on_update;
+        
+        Event<>      on_start, on_finish, on_cancel;
+		Event<double> on_update;
     };
 
     /*---------------- State is the live scheduled run ("the execution") --------
@@ -156,15 +159,17 @@ public:
     Animation& Ease(Easing::Fn&& fn);                // set easing by move
     Animation& Loop(int n = -1);                     // set loop count (-1 infinite)
     Animation& Yoyo(bool b = true);                  // enable/disable yoyo playback
-    Animation& Delay(int ms);                        // set start delay (ms)
-    Animation& OnStart(const Callback& cb);          // set on_start hook
-    Animation& OnStart(Callback&& cb);               // set on_start (move)
-    Animation& OnFinish(const Callback& cb);         // set on_finish hook
-    Animation& OnFinish(Callback&& cb);              // set on_finish (move)
-    Animation& OnCancel(const Callback& cb);         // set on_cancel hook
-    Animation& OnCancel(Callback&& cb);              // set on_cancel (move)
-    Animation& OnUpdate(const Callback1<double>& c); // set on_update(eased) hook
-    Animation& OnUpdate(Callback1<double>&& c);      // set on_update (move)
+    Animation& Delay(int ms);  
+                          // set start delay (ms)
+    Animation& OnStart(const  Event<>& cb);          // set on_start hook
+    Animation& OnStart( Event<>&& cb);               // set on_start (move)
+    Animation& OnFinish(const  Event<>& cb);         // set on_finish hook
+    Animation& OnFinish( Event<>&& cb);              // set on_finish (move)
+    Animation& OnCancel(const  Event<>& cb);         // set on_cancel hook
+    Animation& OnCancel( Event<>&& cb);              // set on_cancel (move)
+    Animation& OnUpdate(const Event<double>& c);  // set on_update(eased) hook
+    Animation& OnUpdate(Event<double>&& c);       // set on_update (move)
+    
     Animation& operator()(const Function<bool(double)>& f); // per-frame tick
     Animation& operator()(Function<bool(double)>&& f);      // per-frame tick (move)
 
@@ -180,6 +185,13 @@ public:
     void   Stop();                         // finish now (Progress=1), fire finish
     void   Cancel(bool fire_cancel = true);// abort run; preserve forward snapshot
     void   Reset(bool fire_cancel = false);// abort + re-prime staging; Progress=0
+    
+    //   - restart_if_running == true  -> Cancel(fire_cancel_if_cancelled) then start
+    //   - restart_if_running == false -> do nothing
+    void   Replay(bool restart_if_running = true, bool fire_cancel_if_cancelled = false); // Start a new run using the last-used spec from Play()
+
+    // Returns true if a previous Play() established a spec we can Replay().
+    bool   HasReplay() const;
 
     bool   IsPlaying() const;              // true if scheduled and not paused
     bool   IsPaused()  const;              // true if scheduled and paused
@@ -216,6 +228,12 @@ private:
 
     // Internal helper for tests/tools.
     void _SetProgressCache(double v) { progress_cache_ = v; }
+    
+    // Cached copy of the last spec committed by Play(). Exists only after the
+    // first successful Play() and persists across runs until replaced.
+
+	One<Staging> last_spec_box_;
+	bool         have_last_spec_ = false;
 };
 
 /*---------------- Convenience helpers for animating values --------------------

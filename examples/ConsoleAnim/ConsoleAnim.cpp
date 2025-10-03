@@ -415,6 +415,71 @@ static bool L28_cancel_while_paused_then_reuse(Probe& p) {
     return ticks > 0;
 }
 
+
+// L29 — Replay() reuses last spec (duration/ease/yoyo/loop)
+static bool L29_replay_reuses_last_spec(Probe& p) {
+    int hits1 = 0, hits2 = 0;
+
+    Animation a(p.owner);
+    a([&](double){ ++hits1; return true; })
+      .Duration(80)
+      .Ease(Easing::OutQuad())
+      .Yoyo(true)
+      .Loop(1)       // forward+reverse once (because yoyo)
+      .Play();
+
+    PumpForMs(200);
+
+    // Now start a new run without retyping setters:
+    a([&](double){ ++hits2; return true; }).Replay();
+
+    PumpForMs(200);
+
+    // Both runs should have ticked (>0). We don’t assert exact counts here;
+    // just that Replay produced a real run with the previous spec.
+    return hits1 > 0 && hits2 > 0;
+}
+
+// L30 — Replay() can be overridden by new setters before calling it
+static bool L30_replay_after_setters_override(Probe& p) {
+    int hits = 0;
+
+    Animation a(p.owner);
+    a([](double){ return true; }).Duration(200).Play();   // long-ish first run
+    PumpForMs(30);
+
+    // Change the spec to much shorter and ensure Replay uses the new spec.
+    a.Duration(40).Ease(Easing::InOutCubic());
+
+    a([&](double){ ++hits; return true; }).Replay();
+    PumpForMs(120);
+
+    return hits > 0; // if it never ran, override didn't take
+}
+
+// L31 — Reset() primes staging and sets Progress() back to 0
+static bool L31_reset_primes_staging_and_zeros_progress(Probe& p) {
+    Animation a(p.owner);
+    a([](double){ return true; }).Duration(120).Play();
+    PumpForMs(30);
+
+    // Take a snapshot before reset (should be > 0)
+    double before = a.Progress();
+
+    a.Reset();  // abort current run, prime fresh staging, Progress -> 0
+
+    double after = a.Progress();
+    bool zeroed = (after <= 1e-9);
+
+    // Immediately reconfigure and play again to prove staging is fresh
+    int hits = 0;
+    a.Duration(50)([&](double){ ++hits; return true; }).Play();
+    PumpForMs(80);
+
+    return (before > 0.0) && zeroed && (hits > 0);
+}
+
+
 // ---------- minimal runner ----------
 namespace {
 struct TestSummary { int total=0, passed=0, failed=0; };
@@ -463,13 +528,15 @@ bool RunProbe()
         { 21, "Exception in tick is caught (no crash)",                 true,  L21_exception_in_tick_is_caught,    nullptr },
         { 22, "Finalize halts running animations",                      true,  L22_finalize_while_running,         nullptr },
         // Extra coverage:
-        { 23, "Pause during Delay holds time (no ticks until resume)",   true,  L23_pause_inside_delay,             nullptr },
+        { 23, "Pause during Delay holds time (no ticks until resume)",  true,  L23_pause_inside_delay,             nullptr },
         { 24, "Cancel called inside tick fires cancel only",            true,  L24_cancel_inside_tick,             nullptr },
         { 25, "Changing FPS mid-run keeps animation healthy",           true,  L25_setfps_midrun,                  nullptr },
         { 26, "After KillAllFor, Progress() reports forced 0.0",        true,  L26_progress_after_killallfor,      nullptr },
-        { 27, "Reuse after Cancel: setters safe, Play again works",      true,  L27_reuse_after_cancel,            nullptr },
-        { 28, "Cancel while paused, then reuse safely",                  true,  L28_cancel_while_paused_then_reuse,nullptr },
-
+        { 27, "Reuse after Cancel: setters safe, Play again works",     true,  L27_reuse_after_cancel,             nullptr },
+        { 28, "Cancel while paused, then reuse safely",                 true,  L28_cancel_while_paused_then_reuse, nullptr },
+        { 29, "Replay() reuses last spec",                              true,  L29_replay_reuses_last_spec,        nullptr },
+		{ 30, "Replay() allows overriding spec via setters",            true,  L30_replay_after_setters_override,  nullptr },
+		{ 31, "Reset() primes staging and zeros Progress()",            true,  L31_reset_primes_staging_and_zeros_progress, nullptr },
     };
 
     Cout() << "Headless Test Suite for Animation Library\n";

@@ -305,14 +305,19 @@ Animation& Animation::Ease(Easing::Fn&& fn)               { EnsureStaging_(); RE
 Animation& Animation::Loop(int n)                         { EnsureStaging_(); RET(staging_->loop_count = n); }
 Animation& Animation::Yoyo(bool b)                        { EnsureStaging_(); RET(staging_->yoyo = b); }
 Animation& Animation::Delay(int ms)                       { EnsureStaging_(); RET(staging_->delay_ms = ms); }
-Animation& Animation::OnStart(const Callback& cb)         { EnsureStaging_(); RET(staging_->on_start = cb); }
-Animation& Animation::OnStart(Callback&& cb)              { EnsureStaging_(); RET(staging_->on_start = pick(cb)); }
-Animation& Animation::OnFinish(const Callback& cb)        { EnsureStaging_(); RET(staging_->on_finish = cb); }
-Animation& Animation::OnFinish(Callback&& cb)             { EnsureStaging_(); RET(staging_->on_finish = pick(cb)); }
-Animation& Animation::OnCancel(const Callback& cb)        { EnsureStaging_(); RET(staging_->on_cancel = cb); }
-Animation& Animation::OnCancel(Callback&& cb)             { EnsureStaging_(); RET(staging_->on_cancel = pick(cb)); }
-Animation& Animation::OnUpdate(const Callback1<double>& c){ EnsureStaging_(); RET(staging_->on_update = c); }
-Animation& Animation::OnUpdate(Callback1<double>&& c)     { EnsureStaging_(); RET(staging_->on_update = pick(c)); }
+
+Animation& Animation::OnStart(const Event<>& cb)         { EnsureStaging_(); RET(staging_->on_start  = cb); }
+Animation& Animation::OnStart(Event<>&& cb)              { EnsureStaging_(); RET(staging_->on_start  = pick(cb)); }
+
+Animation& Animation::OnFinish(const Event<>& cb)        { EnsureStaging_(); RET(staging_->on_finish = cb); }
+Animation& Animation::OnFinish(Event<>&& cb)             { EnsureStaging_(); RET(staging_->on_finish = pick(cb)); }
+
+Animation& Animation::OnCancel(const Event<>& cb)        { EnsureStaging_(); RET(staging_->on_cancel = cb); }
+Animation& Animation::OnCancel(Event<>&& cb)             { EnsureStaging_(); RET(staging_->on_cancel = pick(cb)); }
+
+Animation& Animation::OnUpdate(const Event<double>& c)   { EnsureStaging_(); RET(staging_->on_update = c); }
+Animation& Animation::OnUpdate(Event<double>&& c)        { EnsureStaging_(); RET(staging_->on_update = pick(c)); }
+
 Animation& Animation::operator()(const Function<bool(double)>& f) { EnsureStaging_(); RET(staging_->tick = f); }
 Animation& Animation::operator()(Function<bool(double)>&& f)      { EnsureStaging_(); RET(staging_->tick = pick(f)); }
 
@@ -343,13 +348,20 @@ void Animation::Reset(bool fire_cancel) {
 void Animation::Play()
 {
     if (!staging_) return;
+
     live_ = new State;
     live_->anim  = this;
     live_->owner = owner_;
     live_->spec  = pick(*staging_);
-    staging_ = nullptr;         // staging consumed
+    staging_ = nullptr;                 // staging consumed
 
-    _SetProgressCache(0.0);     // reset cache on (re)start
+    // --- cache the last committed spec for Replay() ---
+    last_spec_box_.Create();
+    *~last_spec_box_ = live_->spec;     // deep copy of the spec
+    have_last_spec_ = true;
+    // -------------------------------------------------------
+
+    _SetProgressCache(0.0);
     live_->start_ms = msecs();
     live_->cycles = (live_->spec.loop_count < 0)
                   ? INT_MAX
@@ -357,6 +369,40 @@ void Animation::Play()
                                       :  live_->spec.loop_count);
     if (live_->spec.on_start) live_->spec.on_start();
     Scheduler::Inst().Add(live_);
+}
+
+
+// Start a new run using the last-used spec from Play().
+// If an animation is currently running:
+//   - restart_if_running == true  -> Cancel(fire_cancel_if_cancelled) then start
+//   - restart_if_running == false -> do nothing
+void Animation::Replay(bool interrupt, bool fire_cancel)
+{
+    // If the user just called setters (or operator() for a new tick),
+    // staging_ exists — prefer those fresh values over the cached spec.
+    if (staging_) {
+        if (interrupt && live_) Cancel(fire_cancel);
+        Play();
+        return;
+    }
+
+    // Otherwise, reuse the last committed spec if we have one.
+    if (!have_last_spec_)
+        return; // nothing to replay yet
+
+    if (interrupt && live_) Cancel(fire_cancel);
+
+    // Rehydrate staging from the cached spec, then Play()
+    staging_box_.Create();
+    staging_ = ~staging_box_;
+    *staging_ = *~last_spec_box_;   // copy back cached spec
+    Play();
+}
+
+
+bool Animation::HasReplay() const
+{
+    return have_last_spec_;
 }
 
 // Pause(): reversible freeze; accumulates elapsed_ms and stops time advancement.
