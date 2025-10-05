@@ -14,7 +14,7 @@ This project demonstrates how a centralized animation system can be integrated i
 * **Fluent Interface** – Chain methods to describe animations:
   `Animation(widget).Duration(500).Ease(Easing::OutCubic) ... .Play();`
 * **Deterministic & Leak-Free** – Built on U++’s ownership primitives (`One<>`), ensuring safe automatic cleanup.
-* **Reusable & Robust** – Supports `Pause`, `Cancel`, and `Reset` with clear semantics.
+* **Robust Lifecycle** – Supports `Pause`, `Cancel`, `Reset`, and now `Replay`, each with clear semantics.
 * **Rich Easing Library** – Includes 20+ standard easing curves (Quad, Cubic, Bounce, Elastic, etc.), plus custom cubic-Bézier.
 * **Core Modes** – `Once`, `Loop`, `Yoyo` playback.
 * **Global Control** – Stop all animations at once via `KillAll()` or per-control with `KillAllFor(ctrl)`.
@@ -89,10 +89,11 @@ GUI_APP_MAIN { MyApp().Run(); }
 ## Lifecycle Semantics
 
 * **Pause** – reversible freeze. Animation remains scheduled and can `Resume()`.
-* **Cancel** – destructive abort. Unschedules, fires `OnCancel`, preserves last forward progress snapshot.
-* **Reset** – destructive abort + clean slate. Calls `Cancel()`, re-primes spec, sets progress to 0; immediately ready to configure and `Play()` again.
+* **Cancel** – aborts run, fires `OnCancel`, and preserves last forward progress snapshot (so `Progress()` still reports how far it got).
+* **Reset** – aborts run, re-primes spec, sets `Progress=0`. This makes the same `Animation` instance immediately reusable.
+* **Replay** – starts a fresh run using the *last committed spec* (the same settings you passed before the previous `Play()`). Useful for repeating an animation without re-typing setters.
 
-`Progress()` always reports **time-normalized progress in \[0..1]**.
+`Progress()` always reports **time-normalized progress in [0..1]**.
 The per-frame lambda you pass to `operator()(Function<bool(double)>)` receives the **eased value**.
 
 ---
@@ -107,6 +108,7 @@ The per-frame lambda you pass to `operator()(Function<bool(double)>)` receives t
 * `Pause()` / `Resume()` – reversible freeze/unfreeze.
 * `Cancel(bool fire_cancel = true)` – abort current run, unschedule, preserve snapshot.
 * `Reset(bool fire_cancel = false)` – abort + re-prime spec, ready to re-use.
+* `Replay(bool interrupt = true, bool fire_cancel = true)` – run again with the last-used spec. If setters were called before `Replay()`, those take priority.
 
 ### Fluent Setters
 
@@ -127,11 +129,18 @@ The per-frame lambda you pass to `operator()(Function<bool(double)>)` receives t
 
 ## Examples
 
-* **ConsoleAnim** – automated probe suite, checks edge cases (reuse after Cancel, pause+cancel, etc.).
+* **ConsoleAnim** – automated probe suite, checks edge cases (reuse after Cancel, Reset behavior, Replay semantics, etc.).
+   <img width="783" height="455" alt="image" src="https://github.com/user-attachments/assets/6b9fd893-cc56-4d42-9211-9dae361e820b" />
+
 * **GUIAnim** – interactive demo: animate buttons, flashing ellipses, easing curve editor.
+   <img width="998" height="619" alt="image" src="https://github.com/user-attachments/assets/4345f79d-78d5-448b-b17b-c3150b5ff521" />
 
 ---
 
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
+
+---
+
+👉 Would you like me to also write a **shorter “What’s New” changelog snippet** (for the forum or release notes) that just highlights Replay + callback cleanup, instead of the full README rewrite?
