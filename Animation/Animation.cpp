@@ -288,12 +288,15 @@ Animation::Animation(Ctrl& owner)
     staging_ = ~staging_box_;
 }
 
-// Destructor: if still live, perform a silent cancel and detach safely.
+// Destructor: detach safely if a run is still live.
+// We use the internal unscheduler so we don't duplicate cleanup logic.
+// This is a *silent* detach (no on_cancel); last_spec_ remains intact for Replay().
 Animation::~Animation()
 {
     if (live_)
-        Cancel(false);   // snapshot progress, detach, sweep-safe remove
+        _Unschedule(false); // silent
 }
+
 
 #define RET(e) do { e; return *this; } while (0)
 
@@ -325,6 +328,30 @@ Animation& Animation::operator()(Function<bool(double)>&& f)      { EnsureStagin
 
 /*---------------- Control methods ----------------*/
 
+// _Unschedule(): common detach path used by ~Animation/Cancel/Reset/Replay.
+// - Detaches from the live State and removes it from the scheduler safely.
+// - If fire_cancel==true, invokes on_cancel on the current spec.
+// - Always snapshots forward time progress into Progress() cache.
+// - Keeps last_spec_ intact for future Replay().
+void Animation::_Unschedule(bool fire_cancel)
+{
+    if (!live_)
+        return;
+
+    if (fire_cancel && live_->spec.on_cancel)
+        live_->spec.on_cancel();
+
+    const double p = Progress(); // forward-time snapshot for caching
+
+    Animation::State* st = live_;
+    live_ = nullptr;            // detach first (avoid re-entrancy surprises)
+    if (st->anim) st->anim = nullptr;
+
+    Scheduler::Inst().Remove(st); // deferred-safe removal via scheduler
+    _OnStateRemovedCancel(p);     // Progress() cache ← snapshot
+}
+
+
 // EnsureStaging_(): lazily create a fresh staging config if missing.
 // Needed after Play()/Cancel()/Stop() so setters always have a target.
 void Animation::EnsureStaging_() {
@@ -335,69 +362,82 @@ void Animation::EnsureStaging_() {
     *staging_ = Staging(); // default config
 }
 
-// Reset(): Abort current run (optionally fire on_cancel), then prime fresh
-// staging and zero Progress() so the instance is immediately reusable.
-void Animation::Reset(bool fire_cancel) {
-    Cancel(fire_cancel);
-    EnsureStaging_();
-    _SetProgressCache(0.0);
+// Reset(): silent abort + prime a fresh staging + Progress() ← 0.
+// last_spec_ is intentionally *kept*, so Replay() still works after Reset().
+void Animation::Reset()
+{
+    _Unschedule(false); // silent (no on_cancel)
+    EnsureStaging_();   // user can immediately reconfigure
+    progress_cache_ = 0.0;
 }
 
-// Play(): commit the current staging into a live State and schedule it.
-// Staging becomes null and will be recreated on the next setter call.
+
+// Play(): commit the *current staging* if present; otherwise reuse last_spec_.
+// - If staging_ exists → commit it (preferred).
+// - Else if we have a cached last_spec_ → rehydrate staging from it and play.
+// - Else → no-op (we never run with accidental defaults).
 void Animation::Play()
 {
-    if (!staging_) return;
+    // If there is no fresh staging, try to reuse the last committed spec.
+    if (!staging_) {
+        if (!have_last_spec_)
+            return; // nothing to run yet
+        staging_box_.Create();
+        staging_ = ~staging_box_;
+        *staging_ = *~last_spec_box_; // copy the cached spec back to staging
+    }
 
+    // Build a live State from the staged config.
     live_ = new State;
     live_->anim  = this;
     live_->owner = owner_;
-    live_->spec  = pick(*staging_);
-    staging_ = nullptr;                 // staging consumed
+    live_->spec  = pick(*staging_);   // consume staging (move/pick)
+    staging_ = nullptr;               // staging consumed
 
-    // --- cache the last committed spec for Replay() ---
+    // Cache the just-committed spec so Replay() can re-run it later.
     last_spec_box_.Create();
-    *~last_spec_box_ = live_->spec;     // deep copy of the spec
-    have_last_spec_ = true;
-    // -------------------------------------------------------
+    *~last_spec_box_ = live_->spec;
+    have_last_spec_  = true;
 
-    _SetProgressCache(0.0);
+    // Initialize runtime bookkeeping and schedule.
+     progress_cache_ = 0.0;
     live_->start_ms = msecs();
-    live_->cycles = (live_->spec.loop_count < 0)
-                  ? INT_MAX
-                  : (live_->spec.yoyo ? (live_->spec.loop_count + 1) / 2
-                                      :  live_->spec.loop_count);
+    live_->cycles   = (live_->spec.loop_count < 0)
+                    ? INT_MAX
+                    : (live_->spec.yoyo ? (live_->spec.loop_count + 1) / 2
+                                        :  live_->spec.loop_count);
+
     if (live_->spec.on_start) live_->spec.on_start();
     Scheduler::Inst().Add(live_);
 }
 
 
-// Start a new run using the last-used spec from Play().
-// If an animation is currently running:
-//   - restart_if_running == true  -> Cancel(fire_cancel_if_cancelled) then start
-//   - restart_if_running == false -> do nothing
-void Animation::Replay(bool interrupt, bool fire_cancel)
+// Replay(): (re)start using the last committed spec.
+// Behavior:
+//  - If there is fresh staging (user just set setters), prefer that by calling Play().
+//    If a run is active, we silently interrupt it (no on_cancel) for smooth UX.
+//  - Else, if we have a cached last_spec_, rehydrate staging from it and Play().
+//  - Else, no-op (there has never been a committed run).
+void Animation::Replay()
 {
-    // If the user just called setters (or operator() for a new tick),
-    // staging_ exists — prefer those fresh values over the cached spec.
     if (staging_) {
-        if (interrupt && live_) Cancel(fire_cancel);
+        if (live_) _Unschedule(false); // silent interrupt
         Play();
         return;
     }
 
-    // Otherwise, reuse the last committed spec if we have one.
     if (!have_last_spec_)
         return; // nothing to replay yet
 
-    if (interrupt && live_) Cancel(fire_cancel);
+    if (live_) _Unschedule(false); // silent interrupt if currently running
 
-    // Rehydrate staging from the cached spec, then Play()
+    // Rehydrate staging from the cached spec, then Play().
     staging_box_.Create();
     staging_ = ~staging_box_;
-    *staging_ = *~last_spec_box_;   // copy back cached spec
+    *staging_ = *~last_spec_box_;
     Play();
 }
+
 
 
 bool Animation::HasReplay() const
@@ -443,23 +483,13 @@ void Animation::Stop()
     Scheduler::Inst().Remove(st);
 }
 
-// Cancel(): abort the current run; unschedule it and preserve a forward
-// progress snapshot so Progress() remains meaningful after abort.
-void Animation::Cancel(bool fire_cancel)
+// Cancel(): abort the current run, fire on_cancel, keep last_spec_ for Replay().
+// Also preserves a forward progress snapshot so Progress() stays meaningful.
+void Animation::Cancel()
 {
-    if (!live_) return;
-
-    if (fire_cancel && live_->spec.on_cancel)
-        live_->spec.on_cancel();
-
-    const double p = Progress();     // snapshot forward time progress
-    Animation::State* st = live_;
-    live_ = nullptr;                 // detach from State
-    if (st->anim) st->anim = nullptr;
-
-    Scheduler::Inst().Remove(st);    // sweep-safe removal
-    _OnStateRemovedCancel(p);        // Progress ← snapshot
+    _Unschedule(true); // fire on_cancel
 }
+
 
 // IsPlaying(): true if a live state exists and is not paused.
 bool Animation::IsPlaying() const

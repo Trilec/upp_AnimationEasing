@@ -1,22 +1,46 @@
 // Animation/Animation.h
 //
-// Animation system for U++ controls.
-// Single-threaded scheduler (TimeCallback) that drives per-frame updates with
-// easing, looping, yoyo, pause/resume, and simple lifecycle callbacks.
+// U++ Animation & Easing Engine
+// ---------------------------------------
+// Single-threaded (TimeCallback) scheduler that drives per-frame updates for
+// UI animations (position/size/color/opacity/etc). Fluent API with CSS-like
+// cubic-Bézier easing, looping, yoyo, pause/resume, and lifecycle events.
 //
-// Design model (two compartments):
-//   • Staging  — the parameters being prepared by setters (duration, easing,
-//                callbacks, tick function). Setters write here until Play().
-//   • State    — a live scheduled run created by moving the Staging config
-//                into the scheduler. State is immutable during a run.
+// Mental model (two compartments):
+//   • Staging  — the “recipe” for the *next* run. Setters (Duration/Ease/Loop…)
+//                write here. Staging is created lazily by setters.
+//   • State    — the live, scheduled run (immutable snapshot of Staging).
 //
-// On Play():  Staging → State (move), staging_ becomes nullptr.
-// After Cancel()/Stop(): staging_ is often null; the next setter will lazily
-//                        re-prime it (EnsureStaging_()).
-// Reset():    Cancel(false) + EnsureStaging_() + Progress() = 0.0
+// On Play():
+//   - If a fresh staging exists → commit it (Staging → State), cache it as
+//     last_spec_ (for Replay), consume staging (staging_ becomes nullptr).
+//   - Else if a last spec exists → reuse it (natural "play again").
+//   - Else → no-op (we never run with unintentional defaults).
 //
-// Progress() always returns [0..1]. After Stop(): 1.0.
-// After Cancel(): last forward progress snapshot. KillAllFor(): 0.0.
+// On Replay():
+//   - Always re-run the cached last_spec_ if present. If a run is active,
+//     it is silently interrupted (no on_cancel).
+//
+// On Cancel():
+//   - Abort current run, fire on_cancel, preserve a forward progress snapshot.
+//
+// On Reset():
+//   - Silent abort (no on_cancel), prime a fresh staging, Progress() ← 0.
+//   - last_spec_ is *kept*, so Replay() still works.
+//
+// Progress():
+//   - Returns normalized **time** progress in [0..1] (independent of easing).
+//
+// Pseudo-usage (compact):
+//   Animation a(ctrl);
+//   a.Duration(300).Ease(Easing::OutCubic())([](double e){ /* draw/e */ return true; }).Play();
+//   a.Pause(); a.Resume(); a.Cancel(); a.Reset(); a.Replay();
+//
+// Notes:
+//   - All lifecycle hooks use Event<> (U++-style). Per-frame tick uses Function<>.
+//   - Convenience helpers (AnimateValue/Color/Rect) are provided.
+//
+// ------------------------------------------------------------------------------
 
 #ifndef _Animation_Animation_h_
 #define _Animation_Animation_h_
@@ -25,15 +49,14 @@
 #include <CtrlCore/CtrlCore.h>
 
 /*---------------- Easing helpers (constexpr cubic-bézier) ----------------
-   Factory and presets for CSS-like cubic Bézier easing. Use presets like
-   Easing::OutQuart(), or build custom curves with Bezier(x1,y1,x2,y2).
+   Factory + presets for CSS-like cubic Bézier easing.
+   Use presets (Easing::OutCubic()) or build your own with Bezier(x1,y1,x2,y2).
 -----------------------------------------------------------------------------*/
 namespace Easing {
 
 using Fn = Upp::Function<double(double)>;
 
-namespace detail {
-// Unit-time cubic Bézier with P0=(0,0), P3=(1,1).
+namespace detail { // Unit-time cubic Bézier with P0=(0,0) and P3=(1,1)
 constexpr double BX(double x1, double x2, double t) noexcept {
     double u = 1.0 - t;
     return 3.0*u*u*t*x1 + 3.0*u*t*t*x2 + t*t*t;
@@ -46,7 +69,7 @@ constexpr double Solve(double x1, double y1, double x2, double y2, double x) noe
     if (x <= 0.0) return 0.0;
     if (x >= 1.0) return 1.0;
     double lo = 0.0, hi = 1.0, t = x;
-    // 8 bisection steps are enough for UI precision.
+    // 8 bisection steps is ample for UI precision.
     for (int i = 0; i < 8; ++i) {
         double cx = BX(x1, x2, t);
         (cx < x ? lo : hi) = t;
@@ -56,7 +79,7 @@ constexpr double Solve(double x1, double y1, double x2, double y2, double x) noe
 }
 } // namespace detail
 
-// Factory: returns a tiny callable to evaluate the curve.
+// Factory: returns a small callable to evaluate the curve.
 constexpr auto Bezier(double x1, double y1, double x2, double y2) {
     return [x1, y1, x2, y2](double t) noexcept -> double {
         return detail::Solve(x1, y1, x2, y2, t);
@@ -86,11 +109,10 @@ inline constexpr auto InOutExpo()     { return Bezier(1.000, 0.000, 0.000, 1.000
 inline constexpr auto InElastic()     { return Bezier(0.600, -0.280, 0.735, 0.045); }
 inline constexpr auto OutElastic()    { return Bezier(0.175, 0.885, 0.320, 1.275); }
 inline constexpr auto InOutElastic()  { return Bezier(0.680, -0.550, 0.265, 1.550); }
-// “Bounce”-like single segment with overshoot.
+// “Bounce”-ish single segment with overshoot.
 inline constexpr auto OutBounce()     { return Bezier(0.680, -0.550, 0.265, 1.550); }
 
 } // namespace Easing
-
 
 
 namespace Upp {
@@ -98,30 +120,28 @@ namespace Upp {
 class Animation {
 public:
     /*---------------- Staging describes the next run ("the recipe") ------------
-       All setters write here prior to Play(). On Play(), a copy/move of this
-       configuration is embedded into a live State for deterministic execution.
+       All setters write here prior to Play(). On Play(), a snapshot of Staging
+       is embedded into a live State for deterministic execution.
+       Staging is created lazily (first time any setter/operator() is called).
     ---------------------------------------------------------------------------*/
     struct Staging {
-        int  duration_ms = 400;                 // duration per leg (ms)
-        int  loop_count  = 1;                   // number of legs; -1 = infinite
-        int  delay_ms    = 0;                   // start delay (ms)
-        bool yoyo        = false;               // forward then reverse per cycle
+        int  duration_ms = 400;                  // duration per leg (ms)
+        int  loop_count  = 1;                    // number of legs; -1 = infinite
+        int  delay_ms    = 0;                    // start delay (ms)
+        bool yoyo        = false;                // forward then reverse per cycle
         Easing::Fn easing = Easing::InOutCubic();// easing function (t in 0..1)
 
         // Per-frame tick. Receives eased t in [0..1]. Return false to stop early.
         Function<bool(double)> tick;
 
-        // Lifecycle hooks. on_update(e) fires every frame with the eased value.
-        //Callback on_start, on_finish, on_cancel;
-        //Callback1<double> on_update;
-        
+        // Lifecycle hooks. on_update(e) fires every frame with eased value.
         Event<>      on_start, on_finish, on_cancel;
-		Event<double> on_update;
+        Event<double> on_update;
     };
 
     /*---------------- State is the live scheduled run ("the execution") --------
-       Owned and advanced by the scheduler. Immutable settings copied from
-       Staging at Play() time; holds timing/yoyo bookkeeping for the current run.
+       Owned by the scheduler. Immutable settings copied from Staging at Play()
+       time; holds timing/yoyo bookkeeping for the current run.
     ---------------------------------------------------------------------------*/
     struct State : Pte<State> {
         Ptr<Ctrl> owner;         // safe watcher of owning Ctrl
@@ -135,7 +155,7 @@ public:
         Animation* anim  = nullptr; // back-pointer (non-owning)
         bool       dying = false;   // deferred removal flag during sweep
 
-        // Step the state to 'now'. Returns true to keep scheduling; false to stop.
+        // Advance to 'now'. Returns true to keep scheduling; false to stop.
         bool Step(int64 now);
     };
 
@@ -151,97 +171,92 @@ public:
     Animation& operator=(const Animation&) = delete;
 
     /*---------------- Fluent configuration (staging) ----------------------------
-       Each setter prepares the next run. If staging is null (e.g., right after
-       Play()), we lazily re-prime it so callers can immediately reconfigure.
+       Each setter prepares the *next* run. If staging is null (e.g. just after
+       Play/Cancel/Reset), we lazily re-prime it so calls keep working.
     ---------------------------------------------------------------------------*/
-    Animation& Duration(int ms);                     // set duration per leg (ms)
-    Animation& Ease(const Easing::Fn& fn);           // set easing by reference
-    Animation& Ease(Easing::Fn&& fn);                // set easing by move
-    Animation& Loop(int n = -1);                     // set loop count (-1 infinite)
-    Animation& Yoyo(bool b = true);                  // enable/disable yoyo playback
-    Animation& Delay(int ms);  
-                          // set start delay (ms)
-    Animation& OnStart(const  Event<>& cb);          // set on_start hook
-    Animation& OnStart( Event<>&& cb);               // set on_start (move)
-    Animation& OnFinish(const  Event<>& cb);         // set on_finish hook
-    Animation& OnFinish( Event<>&& cb);              // set on_finish (move)
-    Animation& OnCancel(const  Event<>& cb);         // set on_cancel hook
-    Animation& OnCancel( Event<>&& cb);              // set on_cancel (move)
-    Animation& OnUpdate(const Event<double>& c);  // set on_update(eased) hook
-    Animation& OnUpdate(Event<double>&& c);       // set on_update (move)
-    
+    Animation& Duration(int ms);                     // duration per leg (ms)
+    Animation& Ease(const Easing::Fn& fn);           // easing by reference
+    Animation& Ease(Easing::Fn&& fn);                // easing by move
+    Animation& Loop(int n = -1);                     // loop count (-1: infinite)
+    Animation& Yoyo(bool b = true);                  // reverse direction per loop
+    Animation& Delay(int ms);                        // start delay (ms)
+
+    Animation& OnStart(const Event<>& cb);           // set on_start hook
+    Animation& OnStart(Event<>&& cb);                // set on_start (move)
+    Animation& OnFinish(const Event<>& cb);          // set on_finish hook
+    Animation& OnFinish(Event<>&& cb);               // set on_finish (move)
+    Animation& OnCancel(const Event<>& cb);          // set on_cancel hook
+    Animation& OnCancel(Event<>&& cb);               // set on_cancel (move)
+    Animation& OnUpdate(const Event<double>& cb);    // per-frame eased value
+    Animation& OnUpdate(Event<double>&& cb);         // per-frame eased value (move)
+
     Animation& operator()(const Function<bool(double)>& f); // per-frame tick
     Animation& operator()(Function<bool(double)>&& f);      // per-frame tick (move)
 
     /*---------------- Control ---------------------------------------------------
        Play() commits the staged config and schedules a new run.
-       Pause()/Resume() are reversible. Stop() completes to 1.0 and fires finish.
-       Cancel() aborts and preserves forward progress. Reset() aborts and primes
-       a clean slate so the same instance is immediately reusable.
+       Pause/Resume are reversible. Stop() completes to 1.0 and fires finish.
+       Cancel() aborts (fires on_cancel). Reset() aborts silently + primes new staging.
+       Replay() re-runs the last committed spec; silently interrupts if needed.
     ---------------------------------------------------------------------------*/
-    void   Play();                         // commit staging → schedule a run
-    void   Pause();                        // reversible freeze; no time accrual
-    void   Resume();                       // continue after Pause()
-    void   Stop();                         // finish now (Progress=1), fire finish
-    void   Cancel(bool fire_cancel = true);// abort run; preserve forward snapshot
-    void   Reset(bool fire_cancel = false);// abort + re-prime staging; Progress=0
-    
-    //   - restart_if_running == true  -> Cancel(fire_cancel_if_cancelled) then start
-    //   - restart_if_running == false -> do nothing
-    void   Replay(bool restart_if_running = true, bool fire_cancel_if_cancelled = false); // Start a new run using the last-used spec from Play()
+    void   Play();      // commit staging → schedule run (or reuse last_spec_)
+    void   Pause();     // reversible freeze; no time accrual
+    void   Resume();    // continue after Pause()
+    void   Stop();      // finish now (Progress=1), fire on_finish
+    void   Cancel();    // abort run; fire on_cancel; keep last_spec_
+    void   Reset();     // silent abort; prime fresh staging; Progress=0; keep last_spec_
+    void   Replay();    // (re)start using last_spec_; silently interrupts if running
 
-    // Returns true if a previous Play() established a spec we can Replay().
+    // True if a previous Play() established a spec we can Replay().
     bool   HasReplay() const;
 
-    bool   IsPlaying() const;              // true if scheduled and not paused
-    bool   IsPaused()  const;              // true if scheduled and paused
+    bool   IsPlaying() const;              // scheduled and not paused
+    bool   IsPaused()  const;              // scheduled and paused
     double Progress()  const;              // normalized time progress [0..1]
 
     /*---------------- Global helpers -------------------------------------------
        Affect the shared scheduler. FPS changes re-arm the timer if needed.
     ---------------------------------------------------------------------------*/
-    static void SetFPS(int fps);           // clamp to [1..240]; set target FPS
-    static int  GetFPS();                  // current target FPS
+    static void SetFPS(int fps);           // clamp [1..240]
+    static int  GetFPS();
     static void KillAllFor(Ctrl& c);       // abort all animations for this Ctrl
     static void Finalize();                // stop scheduler; free all states
 
-    // Test/diagnostic: step scheduler n frames; clamp each dt to max_ms_per_tick.
+    // Tests/diagnostics: step scheduler n frames; clamp each dt to max_ms_per_tick.
     static void Tick(int n = 1, int max_ms_per_tick = 0);
-    static inline void TickOnce() { Tick(1, 0); } // convenience single step
+    static inline void TickOnce() { Tick(1, 0); }
 
-    // Called by scheduler when a State is removed; updates our progress cache.
-    void _OnStateRemovedFinish();                       // Progress ← 1.0
-    void _OnStateRemovedCancel(double forward_snapshot);// Progress ← snapshot
+    // Scheduler → Animation hooks (update cached Progress on removal paths)
+    void _OnStateRemovedFinish();                        // Progress ← 1.0
+    void _OnStateRemovedCancel(double forward_snapshot); // Progress ← snapshot
 
 private:
     // Owner and staging
     Ctrl*        owner_ = nullptr;     // non-owning: the target control
-    One<Staging> staging_box_;         // storage for staging configuration
+    One<Staging> staging_box_;         // storage for staging config (lazy)
     Staging*     staging_ = nullptr;   // points into staging_box_ while staging
     Ptr<State>   live_;                // scheduler-owned state; Ptr guards UAF
 
-    // Progress cache that persists after Stop()/Cancel(), used when !live_.
+    // Progress cache that persists after Stop/Cancel, used when !live_.
     double       progress_cache_ = 0.0;
 
-    // Lazily (re)create staging if null so setters always have a target.
+    // Lazily (re)create staging only when a setter/operator() is called.
     void EnsureStaging_();
 
-    // Internal helper for tests/tools.
-    void _SetProgressCache(double v) { progress_cache_ = v; }
-    
-    // Cached copy of the last spec committed by Play(). Exists only after the
-    // first successful Play() and persists across runs until replaced.
+    // Internal unschedule used by Cancel/Reset/Replay/~Animation
+    void _Unschedule(bool fire_cancel);
 
-	One<Staging> last_spec_box_;
-	bool         have_last_spec_ = false;
+    // Cached copy of the last spec committed by Play(); persists across runs.
+    One<Staging> last_spec_box_;
+    bool         have_last_spec_ = false;
 };
 
 /*---------------- Convenience helpers for animating values --------------------
    AnimateValue<T>: builds a one-shot animation that lerps from 'from' to 'to'
-   using the provided setter, refreshing the control each frame.
+   using the provided setter (Event<const T&>), refreshing the control each frame.
 -----------------------------------------------------------------------------*/
 template <class T>
-inline Animation AnimateValue(Ctrl& ctrl, Callback1<const T&> set, T from, T to,
+inline Animation AnimateValue(Ctrl& ctrl, Event<const T&> set, T from, T to,
                               int ms, Easing::Fn ease = Easing::InOutCubic())
 {
     Animation a(ctrl);
@@ -271,11 +286,11 @@ inline Animation AnimateValue(Ctrl& ctrl, Callback1<const T&> set, T from, T to,
     return pick(a);
 }
 
-inline Animation AnimateColor(Ctrl& c, Callback1<const Color&> cb, Color f, Color t,
+inline Animation AnimateColor(Ctrl& c, Event<const Color&> cb, Color f, Color t,
                               int ms, Easing::Fn e = Easing::InOutCubic())
 { return AnimateValue<Color>(c, cb, f, t, ms, e); }
 
-inline Animation AnimateRect (Ctrl& c, Callback1<const Rect&>  cb, Rect  f, Rect  t,
+inline Animation AnimateRect (Ctrl& c, Event<const Rect&>  cb, Rect  f, Rect  t,
                               int ms, Easing::Fn e = Easing::InOutCubic())
 { return AnimateValue<Rect>(c, cb, f, t, ms, e); }
 

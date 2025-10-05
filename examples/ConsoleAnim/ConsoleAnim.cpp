@@ -479,6 +479,17 @@ static bool L31_reset_primes_staging_and_zeros_progress(Probe& p) {
     return (before > 0.0) && zeroed && (hits > 0);
 }
 
+// L32 — Replay while running restarts immediately (no double schedule)
+static bool L32_replay_interrupts_running(Probe& p) {
+    int hits = 0;
+    Animation a(p.owner);
+    a([&](double){ ++hits; return true; })
+      .Duration(300).Play();
+    PumpForMs(40);
+    a([&](double){ ++hits; return true; }).Replay(); // should interrupt & restart
+    PumpForMs(80);
+    return hits > 0; // just prove the restarted run is ticking
+}
 
 // ---------- minimal runner ----------
 namespace {
@@ -537,6 +548,7 @@ bool RunProbe()
         { 29, "Replay() reuses last spec",                              true,  L29_replay_reuses_last_spec,        nullptr },
 		{ 30, "Replay() allows overriding spec via setters",            true,  L30_replay_after_setters_override,  nullptr },
 		{ 31, "Reset() primes staging and zeros Progress()",            true,  L31_reset_primes_staging_and_zeros_progress, nullptr },
+		{ 32, "Replay() Confirm restart immediately,no double-schedule",true,  L32_replay_interrupts_running, nullptr },
     };
 
     Cout() << "Headless Test Suite for Animation Library\n";

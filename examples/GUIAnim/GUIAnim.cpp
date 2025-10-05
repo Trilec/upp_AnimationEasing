@@ -494,7 +494,7 @@ public:
     DropList   dd_playback;
     DropList   dd_easing;
     EditInt    ed_duration;
-    Button     bt_start, bt_pause, bt_reset;
+    Button     bt_start, bt_pause, bt_reset, bt_replay;
     StaticText lb_status;
 
     // Curve editor + label
@@ -540,10 +540,16 @@ public:
         bt_pause.SetLabel("Pause");
         bt_pause.WhenPush = [=]{ TogglePauseContinue(); };
 
-        Add(bt_reset.LeftPos(x + (w+8)/2, (w-8)/2).TopPos(y, h));
-        bt_reset.SetLabel("Reset");
-        bt_reset.WhenPush = [=]{ ResetAll(); };
-        y += h + gap;
+		Add(bt_reset.LeftPos(x + (w+8)/2, (w-8)/2).TopPos(y, h));
+		bt_reset.SetLabel("Reset");
+		bt_reset.WhenPush = [=]{ ResetAll(); };
+		y += h + gap;
+		
+		Add(bt_replay.LeftPos(x, w).TopPos(y, h));
+		bt_replay.SetLabel("Replay All");
+		bt_replay.WhenPush = [=]{ ReplayAll(); };
+		y += h + gap;
+
 
         Add(lb_status.LeftPos(x, w).TopPos(y, h));
         lb_status.SetText("Idle");
@@ -727,6 +733,37 @@ private:
         lb_status.SetText("Idle");
         bt_pause.SetLabel("Pause");
     }
+
+	void ReplayAll() {
+		    // If a demo already has an Animation with a cached spec, just Replay().
+		    // If not, fall back to starting fresh (same as StartAll for that tile).
+		    int ms = max(1, int(~ed_duration));
+		    Easing::Fn ef = CurrentEase();
+		
+		    for (Demo& d : demos) {
+		        if (d.anim && d.anim->HasReplay()) {
+		            d.anim->operator()([&d](double e){ d.canvas.Set(e); return true; }).Replay();
+		        } else {
+		            // create a fresh run to seed last-spec for next time
+		            if (d.anim) { d.anim->Cancel(); d.anim.Clear(); }
+		            d.anim.Create(d.canvas);
+		            Animation& A = *d.anim;
+		            A([&d](double e){ d.canvas.Set(e); return true; })
+		             .Duration(ms).Ease(ef);
+		
+		            switch (int(~dd_playback)) {
+		            case 1: A.Loop(-1); break;
+		            case 2: A.Yoyo(true).Loop(-1); break;
+		            default: break;
+		            }
+		
+		            A.Play();
+		        }
+		    }
+		
+		    lb_status.SetText("Replaying…");
+		    bt_pause.SetLabel("Pause");
+		}
 
     void OnAnyFinish() { lb_status.SetText("Finished (singles may end before loops)"); }
     void OnAnyCancel() { /* no-op */ }
