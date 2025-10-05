@@ -133,7 +133,8 @@ The per-frame lambda you pass to `operator()(Function<bool(double)>)` receives t
    <img width="783" height="455" alt="image" src="https://github.com/user-attachments/assets/6b9fd893-cc56-4d42-9211-9dae361e820b" />
 
 * **GUIAnim** – interactive demo: animate buttons, flashing ellipses, easing curve editor.
-   <img width="998" height="619" alt="image" src="https://github.com/user-attachments/assets/4345f79d-78d5-448b-b17b-c3150b5ff521" />
+<img width="854" height="617" alt="image" src="https://github.com/user-attachments/assets/96424647-9e53-4a67-8c65-4070ac2b6ebe" />
+
 
 ---
 
@@ -142,5 +143,3 @@ The per-frame lambda you pass to `operator()(Function<bool(double)>)` receives t
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
 
 ---
-
-👉 Would you like me to also write a **shorter “What’s New” changelog snippet** (for the forum or release notes) that just highlights Replay + callback cleanup, instead of the full README rewrite?
